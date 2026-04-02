@@ -9,7 +9,7 @@ const BALL_RADIUS := 7.0
 const BALL_BOUNCE := 0.45
 const BALL_FRICTION := 0.15
 const SPAWN_INTERVAL := 0.12
-const BALLS_PER_ROUND := 100
+const BALLS_PER_ROUND := 500
 const MAX_ACTIVE_BALLS := 600
 const BIN_COUNT := PEG_ROWS + 1
 
@@ -34,6 +34,15 @@ var color_phase: float = 0.0
 var is_resetting: bool = false
 var waiting_for_drain: bool = false
 var current_colors: Array[Color] = []
+
+# Spawn rate oscillation
+var rate_target: float = 1.0
+var rate_current: float = 1.0
+var rate_velocity: float = 0.0
+var rate_jump_timer: float = 0.0
+const RATE_JUMP_INTERVAL := 4.0  # seconds between jumps
+const RATE_DAMPING := 3.0
+const RATE_STIFFNESS := 40.0
 
 const ALL_COLORS := [
 	Color(0.30, 0.85, 0.95),  # Cyan
@@ -88,6 +97,7 @@ func _process(delta):
 		get_tree().quit()
 	color_phase += delta * 0.35
 	_update_stats()
+	_update_spawn_rate(delta)
 
 	if waiting_for_drain:
 		var last_peg_y = peg_top_y + (PEG_ROWS - 1) * PEG_SPACING_Y
@@ -315,6 +325,7 @@ func _on_reset():
 		for ball in children:
 			if is_instance_valid(ball):
 				tween.tween_property(ball, "scale", Vector2.ZERO, 0.4)
+		tween.tween_property(histogram, "fade", 0.0, 0.4)
 		await tween.finished
 
 	# Free all balls
@@ -329,6 +340,7 @@ func _on_reset():
 	# Reset state
 	bin_counts.fill(0)
 	bin_colors.fill(Color.BLACK)
+	histogram.fade = 1.0
 	histogram.update_data(bin_counts, bin_colors, board_offset_x, board_width, bin_top_y)
 	cycle_count += 1
 	_pick_round_colors()
@@ -339,6 +351,20 @@ func _on_reset():
 
 	is_resetting = false
 	spawn_timer.start()
+
+func _update_spawn_rate(delta):
+	# Jump to new target periodically
+	rate_jump_timer -= delta
+	if rate_jump_timer <= 0:
+		rate_target = randf_range(0.6, 1.4)
+		rate_jump_timer = RATE_JUMP_INTERVAL
+
+	# Damped spring toward target
+	var force = RATE_STIFFNESS * (rate_target - rate_current) - RATE_DAMPING * rate_velocity
+	rate_velocity += force * delta
+	rate_current += rate_velocity * delta
+
+	spawn_timer.wait_time = SPAWN_INTERVAL / rate_current
 
 func _pick_round_colors():
 	var shuffled = ALL_COLORS.duplicate()
@@ -355,7 +381,7 @@ func _setup_labels():
 	stats_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 
 func _update_stats():
-	stats_label.text = "Balls: %d  |  Cycle: %d" % [total_dropped, cycle_count]
+	stats_label.text = "%d  |  %d" % [round_dropped, total_dropped]
 
 func _draw():
 	var center_x = 960.0

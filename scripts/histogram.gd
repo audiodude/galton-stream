@@ -6,6 +6,10 @@ var max_count: int = 1
 var board_offset_x: float = 240.0
 var board_width: float = 1440.0
 var bin_top_y: float = 0.0
+var fade: float = 1.0:
+	set(v):
+		fade = v
+		queue_redraw()
 
 func update_data(counts: Array[int], colors: Array[Color], offset_x: float, width: float, top_y: float = 0.0):
 	bin_counts = counts
@@ -39,6 +43,6 @@ func _draw():
 
 		# Use the blended bin color
 		var bar_color = bin_colors[i] if i < bin_colors.size() else Color.WHITE
-		bar_color.a = 0.6
+		bar_color.a = 0.6 * fade
 		draw_rect(rect, bar_color)
 
