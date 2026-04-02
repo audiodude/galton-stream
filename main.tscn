@@ -1,0 +1,31 @@
+[gd_scene load_steps=2 format=3 uid="uid://main"]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/histogram.gd" id="2"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1")
+
+[node name="SpawnTimer" type="Timer" parent="."]
+
+[node name="ResetTimer" type="Timer" parent="."]
+
+[node name="Pegs" type="Node2D" parent="."]
+
+[node name="Walls" type="StaticBody2D" parent="."]
+
+[node name="BinWalls" type="Node2D" parent="."]
+
+[node name="BinAreas" type="Node2D" parent="."]
+
+[node name="Balls" type="Node2D" parent="."]
+
+[node name="Histogram" type="Node2D" parent="."]
+z_index = 10
+script = ExtResource("2")
+
+[node name="TitleLabel" type="Label" parent="."]
+z_index = 10
+
+[node name="StatsLabel" type="Label" parent="."]
+z_index = 10

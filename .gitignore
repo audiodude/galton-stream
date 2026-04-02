@@ -1,0 +1,7 @@
+# Godot
+.godot/
+*.import
+export_presets.cfg
+
+# OBS config
+obs/

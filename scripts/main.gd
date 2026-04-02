@@ -1,0 +1,383 @@
+extends Node2D
+
+# Board geometry
+const PEG_ROWS := 12
+const PEG_SPACING_X := 110.0
+const PEG_SPACING_Y := 60.0
+const PEG_RADIUS := 10.0
+const BALL_RADIUS := 7.0
+const BALL_BOUNCE := 0.45
+const BALL_FRICTION := 0.15
+const SPAWN_INTERVAL := 0.12
+const BALLS_PER_ROUND := 100
+const MAX_ACTIVE_BALLS := 600
+const BIN_COUNT := PEG_ROWS + 1
+
+# Colors
+const BG_COLOR := Color(0.05, 0.05, 0.12)
+const PEG_COLOR := Color(0.55, 0.6, 0.75)
+const WALL_COLOR := Color(0.3, 0.32, 0.45)
+
+# Computed layout
+var board_width: float
+var board_offset_x: float
+var peg_top_y: float = 160.0
+var bin_top_y: float
+var bin_bottom_y: float = 1080.0
+
+var bin_counts: Array[int] = []
+var bin_colors: Array[Color] = []  # Accumulated color per bin (RGB sum)
+var total_dropped: int = 0
+var round_dropped: int = 0
+var cycle_count: int = 1
+var color_phase: float = 0.0
+var is_resetting: bool = false
+var waiting_for_drain: bool = false
+var current_colors: Array[Color] = []
+
+const ALL_COLORS := [
+	Color(0.30, 0.85, 0.95),  # Cyan
+	Color(0.95, 0.35, 0.70),  # Magenta
+	Color(0.95, 0.90, 0.30),  # Yellow
+	Color(0.40, 0.36, 0.48),  # Cool gray
+	Color(0.95, 0.45, 0.30),  # Orange
+	Color(0.40, 0.90, 0.50),  # Green
+]
+const COLOR_GROUP_SIZE := 12  # Balls per color group before shifting
+
+@onready var spawn_timer: Timer = $SpawnTimer
+@onready var reset_timer: Timer = $ResetTimer
+@onready var pegs_node: Node2D = $Pegs
+@onready var balls_node: Node2D = $Balls
+@onready var histogram: Node2D = $Histogram
+@onready var stats_label: Label = $StatsLabel
+@onready var title_label: Label = $TitleLabel
+
+var ball_script = preload("res://scripts/ball.gd")
+var peg_script = preload("res://scripts/peg.gd")
+var bin_areas: Array[Area2D] = []
+
+func _ready():
+	# Calculate board dimensions
+	board_width = PEG_ROWS * PEG_SPACING_X
+	board_offset_x = (1920.0 - board_width) / 2.0
+	bin_top_y = peg_top_y + PEG_ROWS * PEG_SPACING_Y + 20
+
+	# Init bin counts and colors
+	bin_counts.resize(BIN_COUNT)
+	bin_counts.fill(0)
+	bin_colors.resize(BIN_COUNT)
+	bin_colors.fill(Color.BLACK)
+	_pick_round_colors()
+
+	_create_pegs()
+	_create_walls()
+	_create_bin_walls()
+	_create_bin_areas()
+	_setup_labels()
+
+	spawn_timer.wait_time = SPAWN_INTERVAL
+	spawn_timer.timeout.connect(_on_spawn)
+	spawn_timer.start()
+
+	reset_timer.one_shot = true
+	reset_timer.timeout.connect(_on_reset)
+
+func _process(delta):
+	if Input.is_action_just_pressed("ui_cancel"):
+		get_tree().quit()
+	color_phase += delta * 0.35
+	_update_stats()
+
+	if waiting_for_drain:
+		var last_peg_y = peg_top_y + (PEG_ROWS - 1) * PEG_SPACING_Y
+		var all_past = true
+		for ball in balls_node.get_children():
+			if is_instance_valid(ball) and ball.global_position.y < last_peg_y:
+				all_past = false
+				break
+		if all_past:
+			waiting_for_drain = false
+			_start_reset()
+
+func _create_pegs():
+	for row in range(PEG_ROWS):
+		var num_pegs = row + 2
+		var row_width = (num_pegs - 1) * PEG_SPACING_X
+		var start_x = (1920.0 - row_width) / 2.0
+		var y = peg_top_y + row * PEG_SPACING_Y
+
+		for col in range(1, num_pegs - 1):
+			var x = start_x + col * PEG_SPACING_X
+			_create_peg(Vector2(x, y))
+
+func _create_peg(pos: Vector2):
+	var peg = StaticBody2D.new()
+	peg.set_script(peg_script)
+	peg.position = pos
+	peg.radius = PEG_RADIUS
+
+	var shape = CircleShape2D.new()
+	shape.radius = PEG_RADIUS
+	var col = CollisionShape2D.new()
+	col.shape = shape
+	peg.add_child(col)
+
+	# Physics material for pegs
+	var mat = PhysicsMaterial.new()
+	mat.bounce = 0.3
+	mat.friction = 0.1
+	peg.physics_material_override = mat
+
+	pegs_node.add_child(peg)
+
+func _create_walls():
+	var walls = $Walls as StaticBody2D
+	var center_x = 960.0
+	var pad = 25.0
+	var top_half = PEG_SPACING_X * 0.5 + pad
+	var top_y = peg_top_y - 30
+
+	# Convex curved walls: start near top pegs, bulge outward, end at far bin edges
+	var left_points = _make_convex_wall(-1, center_x, top_half, top_y)
+	var right_points = _make_convex_wall(1, center_x, top_half, top_y)
+
+	for i in range(left_points.size() - 1):
+		_add_segment(walls, left_points[i], left_points[i + 1])
+		_add_segment(walls, right_points[i], right_points[i + 1])
+
+	# Floor
+	_add_segment(walls, Vector2(board_offset_x, bin_bottom_y), Vector2(board_offset_x + board_width, bin_bottom_y))
+	# Funnel at top
+	_add_segment(walls, Vector2(center_x - 60, 30), Vector2(center_x - 15, top_y))
+	_add_segment(walls, Vector2(center_x + 60, 30), Vector2(center_x + 15, top_y))
+
+func _make_convex_wall(side: int, center_x: float, top_half: float, top_y: float) -> Array[Vector2]:
+	# side: -1 for left, +1 for right
+	# Cubic bezier: starts at top peg edge, curves outward, arrives vertically at bin edge
+	var pad = 60.0
+	var bin_edge_x = center_x + side * board_width * 0.5
+
+	# P0: top, wider than first row pegs so balls don't escape
+	var p0 = Vector2(center_x + side * (PEG_SPACING_X * 0.5 + pad), top_y)
+	# P3: arrives at outer bin edge, at bin_top_y (then straight down)
+	var p3 = Vector2(bin_edge_x, bin_top_y)
+
+	# P1: controls the outward bulge direction from the top
+	var bulge = 180.0
+	var p1 = Vector2(p0.x + side * bulge, lerp(top_y, bin_top_y, 0.45))
+
+	# P2: controls arrival — must be directly above P3 for vertical tangent
+	var p2 = Vector2(bin_edge_x, lerp(top_y, bin_top_y, 0.55))
+
+	# Sample the cubic bezier
+	var segments := 30
+	var points: Array[Vector2] = []
+	for i in range(segments + 1):
+		var t = float(i) / segments
+		points.append(_bezier3(p0, p1, p2, p3, t))
+
+	# Continue straight down the bin edge to the floor
+	points.append(Vector2(bin_edge_x, bin_bottom_y))
+	return points
+
+func _bezier3(p0: Vector2, p1: Vector2, p2: Vector2, p3: Vector2, t: float) -> Vector2:
+	var u = 1.0 - t
+	return u*u*u*p0 + 3.0*u*u*t*p1 + 3.0*u*t*t*p2 + t*t*t*p3
+
+func _create_bin_walls():
+	var bin_walls_node = $BinWalls
+	var bin_width = board_width / BIN_COUNT
+
+	for i in range(BIN_COUNT + 1):
+		var x = board_offset_x + i * bin_width
+		var wall = StaticBody2D.new()
+		# Full height collision
+		var wall_start_y = bin_top_y
+		_add_segment(wall, Vector2(x, wall_start_y), Vector2(x, bin_bottom_y))
+		bin_walls_node.add_child(wall)
+
+func _create_bin_areas():
+	var bin_width = board_width / BIN_COUNT
+
+	for i in range(BIN_COUNT):
+		var area = Area2D.new()
+		var bin_height = bin_bottom_y - bin_top_y
+		area.position = Vector2(board_offset_x + i * bin_width + bin_width * 0.5, bin_top_y + bin_height * 0.5)
+
+		var shape = RectangleShape2D.new()
+		shape.size = Vector2(bin_width - 4, bin_height)
+		var col = CollisionShape2D.new()
+		col.shape = shape
+		area.add_child(col)
+
+		var idx = i
+		area.body_entered.connect(func(body): _on_ball_binned(idx, body))
+		$BinAreas.add_child(area)
+		bin_areas.append(area)
+
+func _add_segment(parent: Node2D, from: Vector2, to: Vector2):
+	var shape = SegmentShape2D.new()
+	shape.a = from
+	shape.b = to
+	var col = CollisionShape2D.new()
+	col.shape = shape
+	parent.add_child(col)
+
+func _on_spawn():
+	if is_resetting:
+		return
+	if balls_node.get_child_count() >= MAX_ACTIVE_BALLS:
+		return
+
+	var ball = RigidBody2D.new()
+	ball.set_script(ball_script)
+	ball.position = Vector2(960 + randf_range(-12, 12), 20)
+	ball.ball_radius = BALL_RADIUS
+
+	var shape = CircleShape2D.new()
+	shape.radius = BALL_RADIUS
+	var col = CollisionShape2D.new()
+	col.shape = shape
+	ball.add_child(col)
+
+	var mat = PhysicsMaterial.new()
+	mat.bounce = BALL_BOUNCE
+	mat.friction = BALL_FRICTION
+	ball.physics_material_override = mat
+	ball.continuous_cd = RigidBody2D.CCD_MODE_CAST_RAY
+	ball.linear_velocity = Vector2(randf_range(-15, 15), randf_range(10, 150))
+
+	# CMYK color groups with smooth transitions
+	var phase = fmod(color_phase, 2.0)
+	var idx_a = int(phase) % 2
+	var idx_b = (idx_a + 1) % 2
+	var t = fmod(phase, 1.0)
+	var base_color = current_colors[idx_a].lerp(current_colors[idx_b], t)
+	# Add slight per-ball variation
+	ball.color = Color(
+		clampf(base_color.r + randf_range(-0.04, 0.04), 0.0, 1.0),
+		clampf(base_color.g + randf_range(-0.04, 0.04), 0.0, 1.0),
+		clampf(base_color.b + randf_range(-0.04, 0.04), 0.0, 1.0)
+	)
+
+	balls_node.add_child(ball)
+	total_dropped += 1
+	round_dropped += 1
+	if round_dropped >= BALLS_PER_ROUND:
+		spawn_timer.stop()
+		waiting_for_drain = true
+
+func _on_ball_binned(bin_index: int, body: Node2D):
+	if not body is RigidBody2D:
+		return
+	if is_resetting:
+		return
+	if bin_index < 0 or bin_index >= BIN_COUNT:
+		return
+
+	# Get ball color and blend into bin
+	var ball_color := Color.WHITE
+	if body.has_method("_draw") and "color" in body:
+		ball_color = body.color
+
+	bin_counts[bin_index] += 1
+	# Running average: blend new ball color into existing bin color
+	var n = bin_counts[bin_index]
+	var prev = bin_colors[bin_index]
+	bin_colors[bin_index] = Color(
+		(prev.r * (n - 1) + ball_color.r) / n,
+		(prev.g * (n - 1) + ball_color.g) / n,
+		(prev.b * (n - 1) + ball_color.b) / n
+	)
+
+	histogram.update_data(bin_counts, bin_colors, board_offset_x, board_width, bin_top_y)
+
+
+func _start_reset():
+	if is_resetting:
+		return
+	is_resetting = true
+	round_dropped = 0
+	spawn_timer.stop()
+	reset_timer.wait_time = 2.5
+	reset_timer.start()
+
+func _on_reset():
+	# Disable bin detection during reset
+	for area in bin_areas:
+		area.monitoring = false
+
+	var children = balls_node.get_children()
+	if not children.is_empty():
+		var tween = create_tween()
+		tween.set_parallel(true)
+		for ball in children:
+			if is_instance_valid(ball):
+				tween.tween_property(ball, "scale", Vector2.ZERO, 0.4)
+		await tween.finished
+
+	# Free all balls
+	for ball in balls_node.get_children():
+		if is_instance_valid(ball):
+			ball.queue_free()
+
+	# Wait for queue_free to complete
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	# Reset state
+	bin_counts.fill(0)
+	bin_colors.fill(Color.BLACK)
+	histogram.update_data(bin_counts, bin_colors, board_offset_x, board_width, bin_top_y)
+	cycle_count += 1
+	_pick_round_colors()
+
+	# Re-enable bin detection
+	for area in bin_areas:
+		area.monitoring = true
+
+	is_resetting = false
+	spawn_timer.start()
+
+func _pick_round_colors():
+	var shuffled = ALL_COLORS.duplicate()
+	shuffled.shuffle()
+	current_colors = [shuffled[0], shuffled[1]]
+
+func _setup_labels():
+	title_label.visible = false
+
+	stats_label.add_theme_font_size_override("font_size", 18)
+	stats_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.8, 0.7))
+	stats_label.position = Vector2(1600, 10)
+	stats_label.size = Vector2(300, 60)
+	stats_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+
+func _update_stats():
+	stats_label.text = "Balls: %d  |  Cycle: %d" % [total_dropped, cycle_count]
+
+func _draw():
+	var center_x = 960.0
+	var pad = 25.0
+	var top_half = PEG_SPACING_X * 0.5 + pad
+	var top_y = peg_top_y - 30
+	var wall_thick = 5.0
+
+	# Draw funnel
+	draw_line(Vector2(center_x - 60, 30), Vector2(center_x - 15, top_y), WALL_COLOR, wall_thick)
+	draw_line(Vector2(center_x + 60, 30), Vector2(center_x + 15, top_y), WALL_COLOR, wall_thick)
+
+	# Draw convex curved walls
+	var left_points = _make_convex_wall(-1, center_x, top_half, top_y)
+	var right_points = _make_convex_wall(1, center_x, top_half, top_y)
+	for i in range(left_points.size() - 1):
+		draw_line(left_points[i], left_points[i + 1], WALL_COLOR, wall_thick)
+		draw_line(right_points[i], right_points[i + 1], WALL_COLOR, wall_thick)
+
+	# Draw bin walls (thick visual dividers)
+	var bin_width = board_width / BIN_COUNT
+	for i in range(BIN_COUNT + 1):
+		var x = board_offset_x + i * bin_width
+		draw_line(Vector2(x, bin_top_y), Vector2(x, bin_bottom_y), WALL_COLOR, wall_thick)
+
