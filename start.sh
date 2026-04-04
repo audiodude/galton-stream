@@ -3,6 +3,7 @@ set -e
 
 YOUTUBE_URL="rtmp://a.rtmp.youtube.com/live2"
 RESOLUTION="1920x1080"
+OUTPUT_RES="1280x720"
 FPS="24"
 
 if [ -z "$YOUTUBE_STREAM_KEY" ]; then
@@ -36,12 +37,13 @@ ffmpeg \
     -i :99 \
     -f lavfi \
     -i anullsrc=channel_layout=stereo:sample_rate=44100 \
+    -vf scale=${OUTPUT_RES} \
     -c:v libx264 \
     -preset ultrafast \
     -tune zerolatency \
-    -b:v 4500k \
-    -maxrate 4500k \
-    -bufsize 9000k \
+    -b:v 3000k \
+    -maxrate 3000k \
+    -bufsize 6000k \
     -pix_fmt yuv420p \
     -g 60 \
     -c:a aac \
