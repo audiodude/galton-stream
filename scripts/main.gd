@@ -73,6 +73,8 @@ const COLOR_GROUP_SIZE := 12  # Balls per color group before shifting
 
 var ball_script = preload("res://scripts/ball.gd")
 var sticker_script = preload("res://scripts/sticker_effect.gd")
+var superchat_script = preload("res://scripts/superchat_effect.gd")
+var superchat_side: int = 1  # Alternates between -1 (left) and 1 (right)
 var peg_script = preload("res://scripts/peg.gd")
 var bin_areas: Array[Area2D] = []
 
@@ -445,8 +447,8 @@ func _on_chat_event(event: Dictionary):
 			text = "Welcome %s!" % name
 			color = current_colors[randi() % current_colors.size()]
 		"gift":
-			text = "%s gifted %s!" % [name, event.get("amount", "")]
-			color = Color(1.0, 0.85, 0.2)
+			_spawn_superchat(name, event.get("amount", "$1"))
+			return
 		"sticker":
 			_spawn_sticker_effect(name, event.get("amount", ""))
 			return
@@ -512,3 +514,25 @@ func _spawn_sticker_effect(user_name: String, amount: String):
 
 	# Add to the main scene so it can interact with walls
 	add_child(sticker)
+
+func _spawn_superchat(user_name: String, amount_str: String):
+	# Parse dollar amount
+	var dollars = int(amount_str.replace("$", "").replace(",", "").strip_edges())
+	if dollars <= 0:
+		dollars = 1
+
+	# Pick a color from the current palette
+	var color = current_colors[randi() % current_colors.size()]
+
+	# Alternate sides
+	superchat_side *= -1
+
+	var effect = Node2D.new()
+	effect.set_script(superchat_script)
+
+	var typed_bin_areas: Array[Area2D] = []
+	for a in bin_areas:
+		typed_bin_areas.append(a)
+	effect.setup(user_name, dollars, color, superchat_side, typed_bin_areas)
+
+	add_child(effect)
