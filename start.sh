@@ -59,7 +59,7 @@ ffmpeg \
     -stream_loop -1 \
     -i "$PLAYLIST" \
     -vf scale=${OUTPUT_RES} \
-    -af volume=-6dB \
+    -af volume=-7dB \
     -c:v libx264 \
     -preset ultrafast \
     -tune zerolatency \
