@@ -33,6 +33,7 @@ var cycle_count: int = 1
 var color_phase: float = 0.0
 var is_resetting: bool = false
 var waiting_for_drain: bool = false
+var drain_timer: float = 0.0
 var current_colors: Array[Color] = []
 
 # Spawn rate oscillation
@@ -119,14 +120,22 @@ func _process(delta):
 	_update_spawn_rate(delta)
 
 	if waiting_for_drain:
+		drain_timer += delta
 		var last_peg_y = peg_top_y + (PEG_ROWS - 1) * PEG_SPACING_Y
 		var all_past = true
 		for ball in balls_node.get_children():
 			if is_instance_valid(ball) and ball.global_position.y < last_peg_y:
 				all_past = false
 				break
-		if all_past:
+		# Also wait for any active superchat effects to finish spawning
+		var superchat_active = false
+		for child in get_children():
+			if child is Node2D and "active" in child and child.active:
+				superchat_active = false  # Don't block on spawning, just on balls in flight
+				break
+		if (all_past and not superchat_active) or drain_timer > 10.0:
 			waiting_for_drain = false
+			drain_timer = 0.0
 			_start_reset()
 
 func _create_pegs():
