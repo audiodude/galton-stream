@@ -430,7 +430,7 @@ func _setup_labels():
 
 func _update_stats():
 	stats_label.text = "%d  |" % round_dropped
-	total_label.text = "%d  [%d fps]" % [total_dropped, Engine.get_frames_per_second()]
+	total_label.text = "%d" % total_dropped
 
 func _draw():
 	var center_x = 960.0
