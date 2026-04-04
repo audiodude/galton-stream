@@ -17,7 +17,8 @@ export DISPLAY=:99
 # Wait for Xvfb to be ready
 sleep 2
 
-# Hide the cursor
+# Set root window to black and hide cursor
+xsetroot -solid black
 unclutter -idle 0 -root &
 
 # Start Godot
