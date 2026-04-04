@@ -22,12 +22,18 @@ RUN apt-get update && apt-get install -y \
     libdbus-1-3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Godot 4.4 headless
-RUN wget -q https://github.com/godotengine/godot/releases/download/4.4-stable/Godot_v4.4-stable_linux.x86_64.zip \
-    && unzip Godot_v4.4-stable_linux.x86_64.zip \
-    && mv Godot_v4.4-stable_linux.x86_64 /usr/local/bin/godot \
+# Install Godot 4.4
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then \
+        GODOT_FILE="Godot_v4.4-stable_linux.arm64"; \
+    else \
+        GODOT_FILE="Godot_v4.4-stable_linux.x86_64"; \
+    fi && \
+    wget -q "https://github.com/godotengine/godot/releases/download/4.4-stable/${GODOT_FILE}.zip" \
+    && unzip "${GODOT_FILE}.zip" \
+    && mv "$GODOT_FILE" /usr/local/bin/godot \
     && chmod +x /usr/local/bin/godot \
-    && rm Godot_v4.4-stable_linux.x86_64.zip
+    && rm "${GODOT_FILE}.zip"
 
 # Copy project
 WORKDIR /app
