@@ -6,6 +6,7 @@ RESOLUTION="1920x1080"
 OUTPUT_RES="1280x720"
 FPS="30"
 MUSIC_DIR="/data/mp3"
+AUDIO_PIPE="/tmp/audio_pipe"
 S3_BUCKET="s3://music-backup-996646211514-us-west-1-an/soundtrack/"
 
 if [ -z "$YOUTUBE_STREAM_KEY" ]; then
@@ -23,12 +24,6 @@ else
     echo "Music already present: $(ls $MUSIC_DIR/*.mp3 | wc -l) tracks"
 fi
 
-# Create a shuffled playlist
-PLAYLIST="/tmp/playlist.txt"
-ls "$MUSIC_DIR"/*.mp3 | shuf | while read f; do
-    echo "file '$f'"
-done > "$PLAYLIST"
-
 # Start virtual framebuffer with no cursor
 Xvfb :99 -screen 0 ${RESOLUTION}x24 -nocursor &
 export DISPLAY=:99
@@ -40,6 +35,13 @@ sleep 2
 xsetroot -solid black
 unclutter -idle 0 -root &
 
+# Start music player (writes current song to /tmp/current_song.txt, audio to pipe)
+MUSIC_DIR="$MUSIC_DIR" python3 /app/scripts/music_player.py &
+MUSIC_PID=$!
+
+# Wait for pipe to be created
+sleep 2
+
 # Start Godot
 godot --path /app --main-scene main.tscn --rendering-driver opengl3 &
 GODOT_PID=$!
@@ -47,17 +49,16 @@ GODOT_PID=$!
 # Wait for Godot to initialize and start rendering
 sleep 5
 
-# Start FFmpeg to capture the virtual display and stream to YouTube
-# Audio comes from the shuffled playlist, looping forever
+# Start FFmpeg — video from X11, audio from named pipe
 ffmpeg \
     -f x11grab \
     -video_size ${RESOLUTION} \
     -framerate ${FPS} \
     -i :99 \
-    -f concat \
-    -safe 0 \
-    -stream_loop -1 \
-    -i "$PLAYLIST" \
+    -f s16le \
+    -ar 44100 \
+    -ac 2 \
+    -i "$AUDIO_PIPE" \
     -vf scale=${OUTPUT_RES} \
     -af volume=-7dB \
     -c:v libx264 \
@@ -71,18 +72,17 @@ ffmpeg \
     -c:a aac \
     -b:a 128k \
     -ar 44100 \
-    -shortest \
     -f flv \
     "${YOUTUBE_URL}/${YOUTUBE_STREAM_KEY}" &
 FFMPEG_PID=$!
 
-# If either process dies, kill the other and exit
-trap "kill $GODOT_PID $FFMPEG_PID 2>/dev/null; exit" SIGTERM SIGINT
+# If any process dies, kill the others and exit
+trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID 2>/dev/null; exit" SIGTERM SIGINT
 
-while kill -0 $GODOT_PID 2>/dev/null && kill -0 $FFMPEG_PID 2>/dev/null; do
+while kill -0 $GODOT_PID 2>/dev/null && kill -0 $FFMPEG_PID 2>/dev/null && kill -0 $MUSIC_PID 2>/dev/null; do
     sleep 5
 done
 
 echo "Process exited, shutting down..."
-kill $GODOT_PID $FFMPEG_PID 2>/dev/null
+kill $GODOT_PID $FFMPEG_PID $MUSIC_PID 2>/dev/null
 exit 1
