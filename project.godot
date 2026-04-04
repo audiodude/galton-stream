@@ -19,7 +19,7 @@ window/vsync/vsync_mode=1
 
 2d/default_gravity=504.0
 2d/default_linear_damp=0.5
-common/physics_ticks_per_second=120
+common/physics_ticks_per_second=60
 
 [rendering]
 
