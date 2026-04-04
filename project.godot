@@ -13,12 +13,14 @@ config/features=PackedStringArray("4.4")
 window/size/viewport_width=1920
 window/size/viewport_height=1080
 window/size/borderless=true
+window/size/initial_position_type=0
+window/size/initial_position=Vector2i(1200, 150)
 window/vsync/vsync_mode=1
 
 [physics]
 
-2d/default_gravity=980.0
-2d/default_linear_damp=0.1
+2d/default_gravity=504.0
+2d/default_linear_damp=0.5
 common/physics_ticks_per_second=120
 
 [rendering]

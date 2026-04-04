@@ -8,7 +8,7 @@ const PEG_RADIUS := 10.0
 const BALL_RADIUS := 7.0
 const BALL_BOUNCE := 0.45
 const BALL_FRICTION := 0.15
-const SPAWN_INTERVAL := 0.12
+const SPAWN_INTERVAL := 0.18
 const BALLS_PER_ROUND := 500
 const MAX_ACTIVE_BALLS := 600
 const BIN_COUNT := PEG_ROWS + 1
@@ -45,12 +45,18 @@ const RATE_DAMPING := 3.0
 const RATE_STIFFNESS := 40.0
 
 const ALL_COLORS := [
-	Color(0.30, 0.85, 0.95),  # Cyan
-	Color(0.95, 0.35, 0.70),  # Magenta
-	Color(0.95, 0.90, 0.30),  # Yellow
-	Color(0.40, 0.36, 0.48),  # Cool gray
-	Color(0.95, 0.45, 0.30),  # Orange
-	Color(0.40, 0.90, 0.50),  # Green
+	Color(1.00, 0.20, 0.20),  # Red
+	Color(0.15, 0.85, 1.00),  # Cyan
+	Color(1.00, 0.95, 0.15),  # Yellow
+	Color(0.55, 0.20, 1.00),  # Purple
+	Color(1.00, 0.40, 0.10),  # Orange
+	Color(0.10, 1.00, 0.45),  # Green
+	Color(1.00, 0.20, 0.55),  # Hot pink
+	Color(0.20, 0.40, 1.00),  # Blue
+	Color(1.00, 0.65, 0.80),  # Salmon
+	Color(0.00, 1.00, 0.85),  # Teal
+	Color(0.90, 0.70, 0.10),  # Gold
+	Color(0.75, 0.55, 1.00),  # Lavender
 ]
 const COLOR_GROUP_SIZE := 12  # Balls per color group before shifting
 
@@ -256,19 +262,14 @@ func _on_spawn():
 	mat.friction = BALL_FRICTION
 	ball.physics_material_override = mat
 	ball.continuous_cd = RigidBody2D.CCD_MODE_CAST_RAY
-	ball.linear_velocity = Vector2(randf_range(-15, 15), randf_range(10, 150))
+	ball.linear_velocity = Vector2(randf_range(-15, 15), randf_range(5, 40))
 
-	# CMYK color groups with smooth transitions
-	var phase = fmod(color_phase, 2.0)
-	var idx_a = int(phase) % 2
-	var idx_b = (idx_a + 1) % 2
-	var t = fmod(phase, 1.0)
-	var base_color = current_colors[idx_a].lerp(current_colors[idx_b], t)
-	# Add slight per-ball variation
+	# Cycle through round colors with slight variation
+	var base_color = current_colors[round_dropped % current_colors.size()]
 	ball.color = Color(
-		clampf(base_color.r + randf_range(-0.04, 0.04), 0.0, 1.0),
-		clampf(base_color.g + randf_range(-0.04, 0.04), 0.0, 1.0),
-		clampf(base_color.b + randf_range(-0.04, 0.04), 0.0, 1.0)
+		clampf(base_color.r + randf_range(-0.06, 0.06), 0.0, 1.0),
+		clampf(base_color.g + randf_range(-0.06, 0.06), 0.0, 1.0),
+		clampf(base_color.b + randf_range(-0.06, 0.06), 0.0, 1.0)
 	)
 
 	balls_node.add_child(ball)
@@ -369,19 +370,29 @@ func _update_spawn_rate(delta):
 func _pick_round_colors():
 	var shuffled = ALL_COLORS.duplicate()
 	shuffled.shuffle()
-	current_colors = [shuffled[0], shuffled[1]]
+	var count = 2 if randf() < 0.5 else 3
+	current_colors = []
+	for i in range(count):
+		current_colors.append(shuffled[i])
 
 func _setup_labels():
 	title_label.visible = false
 
-	stats_label.add_theme_font_size_override("font_size", 18)
+	stats_label.add_theme_font_size_override("font_size", 32)
 	stats_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.8, 0.7))
-	stats_label.position = Vector2(1600, 10)
-	stats_label.size = Vector2(300, 60)
 	stats_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	stats_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+
+const STATS_RIGHT_MARGIN := 20.0
 
 func _update_stats():
 	stats_label.text = "%d  |  %d" % [round_dropped, total_dropped]
+	var text_width = stats_label.get_theme_font("font").get_string_size(
+		stats_label.text, HORIZONTAL_ALIGNMENT_RIGHT, -1,
+		stats_label.get_theme_font_size("font_size")).x
+	var label_width = text_width + 20.0
+	stats_label.size = Vector2(label_width, 60)
+	stats_label.position = Vector2(1920.0 - STATS_RIGHT_MARGIN - label_width, 10)
 
 func _draw():
 	var center_x = 960.0
