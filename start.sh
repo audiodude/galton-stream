@@ -10,8 +10,8 @@ if [ -z "$YOUTUBE_STREAM_KEY" ]; then
     exit 1
 fi
 
-# Start virtual framebuffer
-Xvfb :99 -screen 0 ${RESOLUTION}x24 &
+# Start virtual framebuffer with no cursor
+Xvfb :99 -screen 0 ${RESOLUTION}x24 -nocursor &
 export DISPLAY=:99
 
 # Wait for Xvfb to be ready
