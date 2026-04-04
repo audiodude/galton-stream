@@ -83,6 +83,7 @@ func _ready():
 	# Position window: origin for headless/Docker, offset for local dev
 	if OS.has_environment("DISPLAY") and OS.get_environment("DISPLAY") == ":99":
 		DisplayServer.window_set_position(Vector2i(0, 0))
+		Engine.max_fps = 30  # Save CPU for FFmpeg encoding
 	else:
 		DisplayServer.window_set_position(Vector2i(1200, 150))
 
