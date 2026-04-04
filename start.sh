@@ -4,7 +4,7 @@ set -e
 YOUTUBE_URL="rtmp://a.rtmp.youtube.com/live2"
 RESOLUTION="1920x1080"
 OUTPUT_RES="1280x720"
-FPS="24"
+FPS="60"
 
 if [ -z "$YOUTUBE_STREAM_KEY" ]; then
     echo "ERROR: YOUTUBE_STREAM_KEY environment variable not set"
@@ -41,11 +41,11 @@ ffmpeg \
     -c:v libx264 \
     -preset ultrafast \
     -tune zerolatency \
-    -b:v 3000k \
-    -maxrate 3000k \
-    -bufsize 6000k \
+    -b:v 4500k \
+    -maxrate 4500k \
+    -bufsize 9000k \
     -pix_fmt yuv420p \
-    -g 60 \
+    -g 120 \
     -c:a aac \
     -b:a 128k \
     -ar 44100 \

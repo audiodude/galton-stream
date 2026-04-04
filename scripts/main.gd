@@ -83,9 +83,14 @@ func _ready():
 	# Position window: origin for headless/Docker, offset for local dev
 	if OS.has_environment("DISPLAY") and OS.get_environment("DISPLAY") == ":99":
 		DisplayServer.window_set_position(Vector2i(0, 0))
-		Engine.max_fps = 30  # Save CPU for FFmpeg encoding
 	else:
 		DisplayServer.window_set_position(Vector2i(1200, 150))
+
+	# Cap FPS via env var (default 30 in headless, uncapped locally)
+	if OS.has_environment("MAX_FPS"):
+		Engine.max_fps = int(OS.get_environment("MAX_FPS"))
+	elif OS.has_environment("DISPLAY") and OS.get_environment("DISPLAY") == ":99":
+		Engine.max_fps = 60
 
 	# Calculate board dimensions
 	board_width = PEG_ROWS * PEG_SPACING_X
