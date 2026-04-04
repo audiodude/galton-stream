@@ -13,6 +13,7 @@ A Godot 4.x app that simulates a Galton board (bean machine). Balls drop through
 - Auto-resets after 472-512 balls per round
 - Ball/cycle counter
 - Live chat integration (welcomes, gift alerts)
+- Background music from S3 with on-screen song title display
 
 ## Requirements
 
@@ -71,13 +72,44 @@ python3 scripts/mock_youtube.py --burst 5          # up to 5 events per batch
 YOUTUBE_API_KEY=... YOUTUBE_VIDEO_ID=... python3 scripts/chat_poller.py
 ```
 
+## Music
+
+The stream plays background music from MP3 files stored in S3. A Python music player decodes tracks and pipes raw audio to FFmpeg via a named pipe.
+
+### How it works
+
+1. On startup, `start.sh` syncs MP3s from S3 to `/data/mp3` (a persistent volume)
+2. `scripts/music_player.py` shuffles and loops through all tracks
+3. Each track is decoded to raw PCM (s16le, 44.1kHz stereo) and written to `/tmp/audio_pipe`
+4. FFmpeg reads from the pipe and muxes the audio with the video capture
+5. The current song title is written to `/tmp/current_song.txt`
+6. `scripts/song_display.gd` polls that file every 2s and shows "♪ Song Title" in the bottom-left corner
+
+### Song title display
+
+When a new song starts, the title appears at full opacity for 5 seconds, then fades to 0.4 over 10 seconds and holds there until the next track.
+
+### Environment variables
+
+| Variable              | Description                           |
+|-----------------------|---------------------------------------|
+| `S3_MUSIC_BUCKET`       | S3 URI for music files (e.g. `s3://bucket/path/`) |
+| `AWS_ACCESS_KEY_ID`     | AWS credentials for S3 music sync     |
+| `AWS_SECRET_ACCESS_KEY` | AWS credentials for S3 music sync     |
+
+The S3 bucket path is configured in `start.sh`. Music files are cached on a persistent volume at `/data/mp3` so they only sync once.
+
 ## Streaming (Docker)
 
 Deploy via Railway or run locally:
 
 ```bash
 docker build -t galton-stream .
-docker run -e YOUTUBE_STREAM_KEY=your-key galton-stream
+docker run -e YOUTUBE_STREAM_KEY=your-key \
+           -e S3_MUSIC_BUCKET=s3://bucket/path/ \
+           -e AWS_ACCESS_KEY_ID=... \
+           -e AWS_SECRET_ACCESS_KEY=... \
+           galton-stream
 ```
 
-The container runs Godot headless with Xvfb and streams to YouTube via FFmpeg.
+The container runs Godot headless with Xvfb and streams to YouTube via FFmpeg at 720p 30fps with audio.

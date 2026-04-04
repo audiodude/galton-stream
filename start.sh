@@ -7,7 +7,7 @@ OUTPUT_RES="1280x720"
 FPS="30"
 MUSIC_DIR="/data/mp3"
 AUDIO_PIPE="/tmp/audio_pipe"
-S3_BUCKET="s3://music-backup-996646211514-us-west-1-an/soundtrack/"
+S3_BUCKET="${S3_MUSIC_BUCKET:?ERROR: S3_MUSIC_BUCKET environment variable not set}"
 
 if [ -z "$YOUTUBE_STREAM_KEY" ]; then
     echo "ERROR: YOUTUBE_STREAM_KEY environment variable not set"
