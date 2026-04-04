@@ -39,10 +39,10 @@ func _physics_process(delta):
 		queue_free()
 		return
 
-	# Freeze once settled in a bin
-	if linear_velocity.length() < 5.0:
+	# Only freeze once in the bin area and barely moving
+	if global_position.y > 900 and linear_velocity.length() < 3.0:
 		settle_timer += delta
-		if settle_timer > 1.0:
+		if settle_timer > 2.0:
 			stop_glow()
 			freeze = true
 			set_physics_process(false)
