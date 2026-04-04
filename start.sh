@@ -17,6 +17,9 @@ export DISPLAY=:99
 # Wait for Xvfb to be ready
 sleep 2
 
+# Hide the cursor
+unclutter -idle 0 -root &
+
 # Start Godot
 godot --path /app --main-scene main.tscn --rendering-driver opengl3 &
 GODOT_PID=$!

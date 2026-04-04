@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     libpulse0 \
     libfontconfig1 \
     libdbus-1-3 \
+    unclutter \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Godot 4.4
