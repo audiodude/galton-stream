@@ -68,6 +68,8 @@ const COLOR_GROUP_SIZE := 12  # Balls per color group before shifting
 @onready var stats_label: Label = $StatsLabel
 @onready var total_label: Label = $TotalLabel
 @onready var title_label: Label = $TitleLabel
+@onready var chat_reader: Node = $ChatReader
+@onready var chat_display: Node2D = $ChatDisplay
 
 var ball_script = preload("res://scripts/ball.gd")
 var peg_script = preload("res://scripts/peg.gd")
@@ -97,6 +99,7 @@ func _ready():
 	_create_bin_walls()
 	_create_bin_areas()
 	_setup_labels()
+	chat_reader.chat_event.connect(_on_chat_event)
 
 	spawn_timer.wait_time = SPAWN_INTERVAL
 	spawn_timer.timeout.connect(_on_spawn)
@@ -430,3 +433,56 @@ func _draw():
 		var x = board_offset_x + i * bin_width
 		draw_line(Vector2(x, bin_top_y), Vector2(x, bin_bottom_y), WALL_COLOR, wall_thick)
 
+func _on_chat_event(event: Dictionary):
+	var event_type = event.get("type", "")
+	var name = event.get("name", "")
+	var text = ""
+	var color = Color.WHITE
+
+	match event_type:
+		"join":
+			text = "Welcome %s!" % name
+			color = current_colors[randi() % current_colors.size()]
+		"gift":
+			text = "%s gifted %s!" % [name, event.get("amount", "")]
+			color = Color(1.0, 0.85, 0.2)
+		_:
+			return
+
+	if text.is_empty():
+		return
+
+	var container = HBoxContainer.new()
+	container.position = Vector2(40, 500 + chat_display.get_child_count() * 40)
+
+	if event_type == "join":
+		var welcome_label = Label.new()
+		welcome_label.text = "Welcome "
+		welcome_label.add_theme_font_size_override("font_size", 28)
+		welcome_label.add_theme_color_override("font_color", current_colors[randi() % current_colors.size()])
+		container.add_child(welcome_label)
+
+		var name_label = Label.new()
+		name_label.text = name + "!"
+		name_label.add_theme_font_size_override("font_size", 28)
+		var name_color = current_colors[randi() % current_colors.size()]
+		while name_color == welcome_label.get_theme_color("font_color") and current_colors.size() > 1:
+			name_color = current_colors[randi() % current_colors.size()]
+		name_label.add_theme_color_override("font_color", name_color)
+		container.add_child(name_label)
+	else:
+		var label = Label.new()
+		label.text = text
+		label.add_theme_font_size_override("font_size", 28)
+		label.add_theme_color_override("font_color", color)
+		container.add_child(label)
+
+	chat_display.add_child(container)
+
+	# Scroll up and fade out over 12 seconds
+	var tween = create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(container, "position:y", container.position.y - 300, 12.0)
+	tween.tween_property(container, "modulate:a", 0.0, 12.0).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_EXPO)
+	tween.set_parallel(false)
+	tween.tween_callback(container.queue_free)
