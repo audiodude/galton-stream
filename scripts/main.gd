@@ -72,6 +72,7 @@ const COLOR_GROUP_SIZE := 12  # Balls per color group before shifting
 @onready var chat_display: Node2D = $ChatDisplay
 
 var ball_script = preload("res://scripts/ball.gd")
+var sticker_script = preload("res://scripts/sticker_effect.gd")
 var peg_script = preload("res://scripts/peg.gd")
 var bin_areas: Array[Area2D] = []
 
@@ -446,6 +447,9 @@ func _on_chat_event(event: Dictionary):
 		"gift":
 			text = "%s gifted %s!" % [name, event.get("amount", "")]
 			color = Color(1.0, 0.85, 0.2)
+		"sticker":
+			_spawn_sticker_effect(name, event.get("amount", ""))
+			return
 		_:
 			return
 
@@ -486,3 +490,25 @@ func _on_chat_event(event: Dictionary):
 	tween.tween_property(container, "modulate:a", 0.0, 12.0).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_EXPO)
 	tween.set_parallel(false)
 	tween.tween_callback(container.queue_free)
+
+func _spawn_sticker_effect(user_name: String, amount: String):
+	var sticker = RigidBody2D.new()
+	sticker.set_script(sticker_script)
+
+	# Start from above the screen, left or right side
+	var from_left = randf() < 0.5
+	if from_left:
+		sticker.position = Vector2(-200, randf_range(-200, -50))
+		sticker.linear_velocity = Vector2(randf_range(350, 500), randf_range(30, 80))
+	else:
+		sticker.position = Vector2(2120, randf_range(-200, -50))
+		sticker.linear_velocity = Vector2(randf_range(-500, -350), randf_range(30, 80))
+
+	var typed_colors: Array[Color] = []
+	for c in current_colors:
+		typed_colors.append(c)
+	sticker.setup(user_name, amount, typed_colors)
+	sticker.z_index = 20
+
+	# Add to the main scene so it can interact with walls
+	add_child(sticker)

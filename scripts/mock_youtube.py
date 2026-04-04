@@ -17,10 +17,13 @@ import time
 from chat_events import write_events
 
 NAMES = [
-    "xX_GaltonFan_Xx", "BellCurveBob", "StatsMaster99", "ProbabilityPete",
-    "NormalDistNancy", "BayesianBill", "MarkovChainMike", "StdDevSteve",
-    "HistogramHelen", "PegBoardPaul", "BinomialBetty", "GaussianGary",
-    "EntropyEve", "SigmaStella", "MeanMachine", "VarianceVic",
+    "Deputadodigital", "DonSalieri181", "Espen005", "Hiuyt543",
+    "LofiLibraryVibe", "Marlonhof", "NerdOdyssey", "YenXenshii_rHh",
+    "affiliation5475", "bandit12116", "cyberbullka", "davidboyd6947",
+    "jonathanbecerra9579", "joseoscar8429", "marenkujio3786",
+    "memelife0078", "mingfanzhang8927", "sarahmast",
+    "stephaniesilvester5728", "thestoicbean1218", "vagnurt",
+    "NamoAmitabha南無阿彌陀佛",
 ]
 
 MESSAGES = [
@@ -31,12 +34,14 @@ MESSAGES = [
 ]
 
 GIFT_AMOUNTS = ["$2", "$5", "$10", "$20", "$50", "$100"]
+STICKER_AMOUNTS = ["$1", "$2", "$5", "$10"]
 
-# Weighted event types: joins are most common, gifts are rare
+# Weighted event types: joins are most common, gifts/stickers are rare
 EVENT_WEIGHTS = {
     "join": 5,
     "message": 3,
     "gift": 1,
+    "sticker": 1,
 }
 
 
@@ -48,6 +53,8 @@ def make_event(event_type):
         event["text"] = random.choice(MESSAGES)
     elif event_type == "gift":
         event["amount"] = random.choice(GIFT_AMOUNTS)
+    elif event_type == "sticker":
+        event["amount"] = random.choice(STICKER_AMOUNTS)
 
     return event
 
@@ -89,12 +96,15 @@ if __name__ == "__main__":
     parser.add_argument("--burst", type=int, default=3, help="Max events per batch")
     parser.add_argument("--joins-only", action="store_true", help="Only generate join events")
     parser.add_argument("--gifts-only", action="store_true", help="Only generate gift events")
+    parser.add_argument("--stickers-only", action="store_true", help="Only generate sticker events")
     args = parser.parse_args()
 
     if args.joins_only:
         types = ["join"]
     elif args.gifts_only:
         types = ["gift"]
+    elif args.stickers_only:
+        types = ["sticker"]
     else:
         types = list(EVENT_WEIGHTS.keys())
 

@@ -158,6 +158,13 @@ def run():
                     "amount": snippet.get("superChatDetails", {}).get("amountDisplayString", ""),
                     "time": time.time(),
                 })
+            elif msg_type == "superStickerEvent":
+                events.append({
+                    "type": "sticker",
+                    "name": name,
+                    "amount": snippet.get("superStickerDetails", {}).get("amountDisplayString", ""),
+                    "time": time.time(),
+                })
 
         if events:
             write_events(events)
