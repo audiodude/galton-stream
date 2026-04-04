@@ -155,13 +155,13 @@ func _spawn_ball():
 	# Just drop, let the ramp guide them
 	ball.linear_velocity = Vector2(randf_range(-10, 10), randf_range(10, 40))
 
-	get_parent().add_child(ball)
+	# Add to balls_node so they get cleaned up on round reset
+	var main = get_parent()
+	main.get_node("Balls").add_child(ball)
 
 	# Count in the main stats
-	var main = get_parent()
-	if main.has_method("_update_stats"):
-		main.total_dropped += 1
-		main.round_dropped += 1
+	main.total_dropped += 1
+	main.round_dropped += 1
 
 	# Connect to bin areas to stop glow on landing
 	for area in bin_areas:

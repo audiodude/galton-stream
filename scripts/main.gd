@@ -351,6 +351,11 @@ func _on_reset():
 	await get_tree().process_frame
 	await get_tree().process_frame
 
+	# Clean up superchat effects and ramps
+	for child in get_children():
+		if child.has_method("_cleanup"):
+			child._cleanup()
+
 	# Reset state
 	bin_counts.fill(0)
 	bin_colors.fill(Color.BLACK)
