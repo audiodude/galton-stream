@@ -6,3 +6,4 @@ export_presets.cfg
 # OBS config
 obs/
 youtube_token.json
+soundtrack/

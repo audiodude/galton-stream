@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y \
     libdbus-1-3 \
     unclutter \
     x11-xserver-utils \
+    awscli \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Godot 4.4
