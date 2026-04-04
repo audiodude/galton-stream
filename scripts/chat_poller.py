@@ -88,6 +88,7 @@ def run():
     poll_ms = POLL_INTERVAL * 1000
     # Skip initial batch (history) by doing one fetch and ignoring results
     first_poll = True
+    seen_users = set()  # Track users we've already welcomed
 
     while True:
         # Refresh access token every 45 minutes
@@ -114,13 +115,22 @@ def run():
                 token_refreshed_at = time.time()
             time.sleep(poll_ms / 1000)
             continue
+        except (urllib.error.URLError, OSError) as e:
+            print(f"Network error: {e}, retrying...", file=sys.stderr, flush=True)
+            time.sleep(poll_ms / 1000)
+            continue
 
         page_token = data.get("nextPageToken")
         poll_ms = data.get("pollingIntervalMillis", POLL_INTERVAL * 1000)
 
         if first_poll:
             first_poll = False
-            print(f"Skipped {len(data.get('items', []))} historical messages", flush=True)
+            # Remember existing chatters so we don't welcome them again
+            for item in data.get("items", []):
+                author = item.get("authorDetails", {})
+                seen_users.add(author.get("channelId", ""))
+            print(f"Skipped {len(data.get('items', []))} historical messages, "
+                  f"{len(seen_users)} known users", flush=True)
             time.sleep(poll_ms / 1000)
             continue
 
@@ -130,25 +140,22 @@ def run():
             author = item.get("authorDetails", {})
             msg_type = snippet.get("type", "")
             name = author.get("displayName", "Unknown")
+            channel_id = author.get("channelId", "")
 
-            if msg_type == "textMessageEvent":
+            # First message from a user = welcome them
+            if channel_id and channel_id not in seen_users:
+                seen_users.add(channel_id)
                 events.append({
-                    "type": "message",
+                    "type": "join",
                     "name": name,
-                    "text": snippet.get("textMessageDetails", {}).get("messageText", ""),
                     "time": time.time(),
                 })
-            elif msg_type == "superChatEvent":
+
+            if msg_type == "superChatEvent":
                 events.append({
                     "type": "gift",
                     "name": name,
                     "amount": snippet.get("superChatDetails", {}).get("amountDisplayString", ""),
-                    "time": time.time(),
-                })
-            elif msg_type == "newSponsorEvent":
-                events.append({
-                    "type": "join",
-                    "name": name,
                     "time": time.time(),
                 })
 
