@@ -9,7 +9,7 @@ const BALL_RADIUS := 7.0
 const BALL_BOUNCE := 0.45
 const BALL_FRICTION := 0.15
 const SPAWN_INTERVAL := 0.18
-const BALLS_PER_ROUND := 500
+var balls_per_round: int = 500
 const MAX_ACTIVE_BALLS := 600
 const BIN_COUNT := PEG_ROWS + 1
 
@@ -282,7 +282,7 @@ func _on_spawn():
 	balls_node.add_child(ball)
 	total_dropped += 1
 	round_dropped += 1
-	if round_dropped >= BALLS_PER_ROUND:
+	if round_dropped >= balls_per_round:
 		spawn_timer.stop()
 		waiting_for_drain = true
 
@@ -375,6 +375,7 @@ func _update_spawn_rate(delta):
 	spawn_timer.wait_time = SPAWN_INTERVAL / rate_current
 
 func _pick_round_colors():
+	balls_per_round = randi_range(472, 512)
 	var shuffled = ALL_COLORS.duplicate()
 	shuffled.shuffle()
 	var count = 2 if randf() < 0.5 else 3
