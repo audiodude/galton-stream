@@ -72,8 +72,13 @@ def main():
     }).encode()
 
     req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data)
-    with urllib.request.urlopen(req) as resp:
-        tokens = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req) as resp:
+            tokens = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        print(f"ERROR: Token exchange failed ({e.code}): {error_body}", file=sys.stderr)
+        sys.exit(1)
 
     token_data = {
         "client_id": CLIENT_ID,
