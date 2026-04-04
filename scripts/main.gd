@@ -73,6 +73,12 @@ var peg_script = preload("res://scripts/peg.gd")
 var bin_areas: Array[Area2D] = []
 
 func _ready():
+	# Position window: origin for headless/Docker, offset for local dev
+	if OS.has_environment("DISPLAY") and OS.get_environment("DISPLAY") == ":99":
+		DisplayServer.window_set_position(Vector2i(0, 0))
+	else:
+		DisplayServer.window_set_position(Vector2i(1200, 150))
+
 	# Calculate board dimensions
 	board_width = PEG_ROWS * PEG_SPACING_X
 	board_offset_x = (1920.0 - board_width) / 2.0
