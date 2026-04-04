@@ -90,7 +90,7 @@ func _ready():
 	if OS.has_environment("MAX_FPS"):
 		Engine.max_fps = int(OS.get_environment("MAX_FPS"))
 	elif OS.has_environment("DISPLAY") and OS.get_environment("DISPLAY") == ":99":
-		Engine.max_fps = 60
+		Engine.max_fps = 30
 
 	# Calculate board dimensions
 	board_width = PEG_ROWS * PEG_SPACING_X
