@@ -66,6 +66,7 @@ const COLOR_GROUP_SIZE := 12  # Balls per color group before shifting
 @onready var balls_node: Node2D = $Balls
 @onready var histogram: Node2D = $Histogram
 @onready var stats_label: Label = $StatsLabel
+@onready var total_label: Label = $TotalLabel
 @onready var title_label: Label = $TitleLabel
 
 var ball_script = preload("res://scripts/ball.gd")
@@ -384,21 +385,25 @@ func _pick_round_colors():
 func _setup_labels():
 	title_label.visible = false
 
-	stats_label.add_theme_font_size_override("font_size", 32)
-	stats_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.8, 0.7))
-	stats_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	stats_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	var label_color = Color(0.6, 0.65, 0.8, 0.7)
 
-const STATS_RIGHT_MARGIN := 20.0
+	# Round count + divider (right-aligned, fixed position)
+	stats_label.add_theme_font_size_override("font_size", 32)
+	stats_label.add_theme_color_override("font_color", label_color)
+	stats_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	stats_label.position = Vector2(1400, 10)
+	stats_label.size = Vector2(300, 60)
+
+	# Total count (left-aligned, right of divider)
+	total_label.add_theme_font_size_override("font_size", 32)
+	total_label.add_theme_color_override("font_color", label_color)
+	total_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	total_label.position = Vector2(1720, 10)
+	total_label.size = Vector2(180, 60)
 
 func _update_stats():
-	stats_label.text = "%d  |  %d" % [round_dropped, total_dropped]
-	var text_width = stats_label.get_theme_font("font").get_string_size(
-		stats_label.text, HORIZONTAL_ALIGNMENT_RIGHT, -1,
-		stats_label.get_theme_font_size("font_size")).x
-	var label_width = text_width + 20.0
-	stats_label.size = Vector2(label_width, 60)
-	stats_label.position = Vector2(1920.0 - STATS_RIGHT_MARGIN - label_width, 10)
+	stats_label.text = "%d  |" % round_dropped
+	total_label.text = "%d" % total_dropped
 
 func _draw():
 	var center_x = 960.0

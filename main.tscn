@@ -29,3 +29,6 @@ z_index = 10
 
 [node name="StatsLabel" type="Label" parent="."]
 z_index = 10
+
+[node name="TotalLabel" type="Label" parent="."]
+z_index = 10
