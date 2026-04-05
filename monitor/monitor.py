@@ -83,6 +83,7 @@ def get_access_token():
     """Get a valid OAuth access token, refreshing if needed."""
     global _access_token, _token_expires
     if not YOUTUBE_REFRESH_TOKEN or not YOUTUBE_CLIENT_ID:
+        log(f"OAuth skipped: refresh_token={bool(YOUTUBE_REFRESH_TOKEN)}, client_id={bool(YOUTUBE_CLIENT_ID)}")
         return None
     if _access_token and time.time() < _token_expires - 60:
         return _access_token
@@ -107,20 +108,12 @@ def get_access_token():
 def check_youtube_status():
     """Check YouTube broadcast status via Data API v3. Returns (status_string, is_live)."""
     token = get_access_token()
-    if not token and not YOUTUBE_API_KEY:
-        return "unknown (no credentials)", None
+    if not token:
+        return "unknown (no OAuth token)", None
 
     try:
-        if token:
-            # Authenticated: can see our own broadcasts
-            url = "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=status&broadcastStatus=active"
-            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-        else:
-            url = (
-                "https://www.googleapis.com/youtube/v3/liveBroadcasts"
-                f"?part=status&broadcastStatus=active&key={YOUTUBE_API_KEY}"
-            )
-            req = urllib.request.Request(url)
+        url = "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=status&broadcastStatus=active"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
 
         resp = urllib.request.urlopen(req, timeout=10)
         data = json.loads(resp.read().decode())
@@ -449,6 +442,9 @@ def main():
     global current_state, consecutive_failures, youtube_failures
 
     log(f"Starting monitor, polling {GALTON_STREAM_URL} every {POLL_INTERVAL}s")
+    log(f"YouTube OAuth: client_id={'set' if YOUTUBE_CLIENT_ID else 'MISSING'}, "
+        f"client_secret={'set' if YOUTUBE_CLIENT_SECRET else 'MISSING'}, "
+        f"refresh_token={'set' if YOUTUBE_REFRESH_TOKEN else 'MISSING'}")
     send_telegram(f"{PREFIX} Monitor service started.")
 
     while True:
