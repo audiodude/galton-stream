@@ -142,11 +142,24 @@ def play_loop():
                 "pipe:1"
             ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
-            while True:
-                chunk = proc.stdout.read(65536)
-                if not chunk:
-                    break
-                os.write(pipe_fd, chunk)
+            try:
+                while True:
+                    chunk = proc.stdout.read(65536)
+                    if not chunk:
+                        break
+                    os.write(pipe_fd, chunk)
+            except BrokenPipeError:
+                print(f"Broken pipe writing audio — reader likely died, waiting to retry...",
+                      file=sys.stderr, flush=True)
+                proc.kill()
+                proc.wait()
+                os.close(pipe_fd)
+                # Wait for streaming FFmpeg to restart, then reopen pipe
+                time.sleep(10)
+                pipe_fd = os.open(AUDIO_PIPE, os.O_WRONLY)
+                print("Audio pipe reopened", flush=True)
+                title_available_at = 0.0
+                continue
 
             proc.wait()
             if proc.returncode != 0:

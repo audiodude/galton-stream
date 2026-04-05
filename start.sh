@@ -24,6 +24,9 @@ else
     echo "Music already present: $(ls $MUSIC_DIR/*.mp3 | wc -l) tracks"
 fi
 
+# Clean up stale X lock from previous crash
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+
 # Start virtual framebuffer with no cursor
 Xvfb :99 -screen 0 ${RESOLUTION}x24 -nocursor &
 export DISPLAY=:99
