@@ -38,12 +38,22 @@ GALTON_STREAM_ENVIRONMENT_ID = os.environ.get("RAILWAY_ENVIRONMENT_ID", "")
 # YouTube Data API (optional, for broadcast status checks)
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
 
+# YouTube OAuth (for authenticated broadcast status)
+YOUTUBE_CLIENT_ID = os.environ.get("YOUTUBE_CLIENT_ID", "")
+YOUTUBE_CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET", "")
+YOUTUBE_REFRESH_TOKEN = os.environ.get("YOUTUBE_REFRESH_TOKEN", "")
+
+# Cached OAuth access token
+_access_token = None
+_token_expires = 0
+
 PREFIX = "Galton monitor:"
 
 # State
 fallback_proc = None
 current_state = "STARTING"  # NORMAL, FALLBACK_ACTIVE, RESTARTED_ALL, RESTARTED_RAILWAY, DEAD
 consecutive_failures = 0
+youtube_failures = 0
 
 
 def log(msg):
@@ -69,33 +79,67 @@ def send_telegram(text):
     log(f"Telegram: {text}")
 
 
-def check_youtube_status():
-    """Check YouTube broadcast status via Data API v3. Returns status string."""
-    if not YOUTUBE_API_KEY:
-        return "unknown (no API key)"
+def get_access_token():
+    """Get a valid OAuth access token, refreshing if needed."""
+    global _access_token, _token_expires
+    if not YOUTUBE_REFRESH_TOKEN or not YOUTUBE_CLIENT_ID:
+        return None
+    if _access_token and time.time() < _token_expires - 60:
+        return _access_token
     try:
-        url = (
-            "https://www.googleapis.com/youtube/v3/liveBroadcasts"
-            f"?part=status&broadcastStatus=active&key={YOUTUBE_API_KEY}"
-        )
-        req = urllib.request.Request(url)
+        data = urllib.parse.urlencode({
+            "client_id": YOUTUBE_CLIENT_ID,
+            "client_secret": YOUTUBE_CLIENT_SECRET,
+            "refresh_token": YOUTUBE_REFRESH_TOKEN,
+            "grant_type": "refresh_token",
+        }).encode()
+        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data)
+        resp = urllib.request.urlopen(req, timeout=10)
+        tokens = json.loads(resp.read().decode())
+        _access_token = tokens["access_token"]
+        _token_expires = time.time() + tokens.get("expires_in", 3600)
+        return _access_token
+    except Exception as e:
+        log(f"OAuth token refresh failed: {e}")
+        return None
+
+
+def check_youtube_status():
+    """Check YouTube broadcast status via Data API v3. Returns (status_string, is_live)."""
+    token = get_access_token()
+    if not token and not YOUTUBE_API_KEY:
+        return "unknown (no credentials)", None
+
+    try:
+        if token:
+            # Authenticated: can see our own broadcasts
+            url = "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=status&broadcastStatus=active"
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        else:
+            url = (
+                "https://www.googleapis.com/youtube/v3/liveBroadcasts"
+                f"?part=status&broadcastStatus=active&key={YOUTUBE_API_KEY}"
+            )
+            req = urllib.request.Request(url)
+
         resp = urllib.request.urlopen(req, timeout=10)
         data = json.loads(resp.read().decode())
         items = data.get("items", [])
         if not items:
-            return "no active broadcast"
+            return "no active broadcast", False
         status = items[0].get("status", {})
         life = status.get("lifeCycleStatus", "unknown")
         recording = status.get("recordingStatus", "unknown")
-        return f"{life}/{recording}"
+        is_live = life == "live" and recording == "recording"
+        return f"{life}/{recording}", is_live
     except Exception as e:
         log(f"YouTube API check failed: {e}")
-        return f"error: {e}"
+        return f"error: {e}", None
 
 
 def on_state_transition(old_state, new_state, reason):
     """Called on every state transition. Checks YouTube and alerts."""
-    yt_status = check_youtube_status()
+    yt_status, _ = check_youtube_status()
     msg = (
         f"{PREFIX} State: {old_state} -> {new_state}. "
         f"Reason: {reason}. YouTube: {yt_status}"
@@ -164,6 +208,22 @@ def stop_fallback():
     log("Fallback stream stopped")
 
 
+def restart_ffmpeg():
+    """POST /restart-ffmpeg to galton-stream's health server."""
+    try:
+        req = urllib.request.Request(
+            f"{GALTON_STREAM_URL}/restart-ffmpeg",
+            data=b"",
+            method="POST",
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        log(f"restart-ffmpeg response: {resp.read().decode()}")
+        return True
+    except Exception as e:
+        log(f"restart-ffmpeg failed: {e}")
+        return False
+
+
 def restart_galton_stream():
     """POST /restart-all to galton-stream's health server."""
     try:
@@ -226,7 +286,7 @@ def set_state(new_state, reason):
 
 
 def main():
-    global current_state, consecutive_failures
+    global current_state, consecutive_failures, youtube_failures
 
     log(f"Starting monitor, polling {GALTON_STREAM_URL} every {POLL_INTERVAL}s")
     send_telegram(f"{PREFIX} Monitor service started.")
@@ -277,10 +337,38 @@ def main():
             stop_fallback()
             set_state("NORMAL", "stream recovered")
             consecutive_failures = 0
+            youtube_failures = 0
         else:
             tx = health.get("tx_bytes", 0)
-            log(f"Healthy: tx_bytes={tx}, uptime={health.get('uptime_seconds', 0)}s")
             consecutive_failures = 0
+
+            # Check if YouTube broadcast is still alive
+            yt_status, yt_live = check_youtube_status()
+            if yt_live is False:
+                youtube_failures += 1
+                log(f"YouTube down ({yt_status}), yt_fail #{youtube_failures}")
+                if youtube_failures == 2:
+                    # Two consecutive checks (240s) with no broadcast — restart FFmpeg
+                    # so it reconnects to YouTube RTMP
+                    msg = (f"{PREFIX} YouTube broadcast down ({yt_status}) but "
+                           f"galton-stream healthy. Restarting FFmpeg to reconnect.")
+                    send_telegram(msg)
+                    log(msg)
+                    restart_ffmpeg()
+                elif youtube_failures == 4:
+                    # 480s — full container restart
+                    msg = (f"{PREFIX} YouTube still down after FFmpeg restart. "
+                           f"Restarting container.")
+                    send_telegram(msg)
+                    log(msg)
+                    restart_galton_stream()
+                    youtube_failures = 0
+            else:
+                if youtube_failures > 0:
+                    log(f"YouTube recovered ({yt_status})")
+                youtube_failures = 0
+
+            log(f"Healthy: tx_bytes={tx}, uptime={health.get('uptime_seconds', 0)}s, yt={yt_status}")
 
 
 if __name__ == "__main__":
