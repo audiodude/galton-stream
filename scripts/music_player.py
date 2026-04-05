@@ -5,6 +5,7 @@ and pipes raw audio to a named pipe for FFmpeg."""
 import glob
 import json
 import os
+import queue
 import random
 import subprocess
 import sys
@@ -90,23 +91,21 @@ def play_loop():
         random.shuffle(playlist)
         start_index = 0
 
-    # Schedule title updates on a timer so the decode loop never blocks.
-    pending_timer = [None]  # mutable container for the timer reference
+    # Queue of (absolute_time, title) — a background thread processes
+    # them in order, sleeping until each one is due.
+    title_queue = queue.Queue()
 
-    def schedule_title(title, delay):
-        """Update song title after delay seconds, on a background thread."""
-        if pending_timer[0] is not None:
-            pending_timer[0].cancel()
-        if delay <= 0:
+    def title_worker():
+        while True:
+            show_at, title = title_queue.get()
+            wait = show_at - time.time()
+            if wait > 0:
+                time.sleep(wait)
             write_song_name(title)
             print(f"Now playing: {title}", flush=True)
-        else:
-            def do_update():
-                write_song_name(title)
-                print(f"Now playing: {title}", flush=True)
-            pending_timer[0] = threading.Timer(delay, do_update)
-            pending_timer[0].daemon = True
-            pending_timer[0].start()
+
+    t = threading.Thread(target=title_worker, daemon=True)
+    t.start()
 
     title_available_at = 0.0
 
@@ -123,17 +122,13 @@ def play_loop():
             title = song_title(song)
             duration = get_duration(song)
 
-            # Schedule title update for when the previous song's
-            # real-time playback finishes. Decode starts immediately
-            # so the audio pipe never goes dry.
-            delay = title_available_at - time.time()
-            schedule_title(
-                title,
-                max(0, delay),
-            )
+            # Queue the title to display when this song actually starts
+            # playing (after the previous song's real-time duration).
+            show_at = max(title_available_at, time.time())
+            title_queue.put((show_at, title))
             print(f"Decoding: {title} ({i + 1}/{len(playlist)}, {duration:.0f}s)", flush=True)
 
-            title_available_at = time.time() + max(0, delay) + duration
+            title_available_at = show_at + duration
 
             # Decode MP3 to raw PCM, piping stdout through our
             # persistent pipe fd so it never sees EOF between songs.
