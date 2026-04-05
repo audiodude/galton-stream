@@ -1,7 +1,7 @@
 extends StaticBody2D
 
 var base_color: Color = Color(0.55, 0.6, 0.75)
-var flash_color: Color = Color(0.85, 0.9, 1.0)
+var flash_color: Color = Color(1.0, 1.0, 1.0)
 var flash_amount: float = 0.0
 var radius: float = 10.0
 
@@ -21,7 +21,7 @@ func _on_hit(_body):
 
 func _process(delta):
 	if flash_amount > 0.0:
-		flash_amount = max(flash_amount - delta * 3.0, 0.0)
+		flash_amount = max(flash_amount - delta * 2.0, 0.0)
 		queue_redraw()
 
 func _draw():

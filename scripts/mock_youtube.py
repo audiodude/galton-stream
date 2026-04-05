@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Mock YouTube chat service for local testing.
 
-Generates fake join, message, and gift events at configurable rates.
+Generates fake chat events at configurable rates per type.
 Writes to the same JSON IPC file that Godot reads.
 
 Usage:
     python3 mock_youtube.py
-    python3 mock_youtube.py --interval 3 --burst 5
-    python3 mock_youtube.py --joins-only
+    python3 mock_youtube.py --join-delay-ms 3000 --gift-delay-ms 10000
+    python3 mock_youtube.py --join-delay-ms 2000  # only joins every 2s
 """
 
 import argparse
 import random
+import threading
 import time
 
 from chat_events import write_events
@@ -36,13 +37,13 @@ MESSAGES = [
 GIFT_AMOUNTS = ["$2", "$5", "$10", "$20", "$50", "$100"]
 STICKER_AMOUNTS = ["$1", "$2", "$5", "$10"]
 
-# Weighted event types: joins are most common, gifts/stickers are rare
-EVENT_WEIGHTS = {
-    "join": 5,
-    "welcome_back": 3,
-    "message": 3,
-    "gift": 1,
-    "sticker": 1,
+# Default delays in ms (0 = disabled)
+DEFAULT_DELAYS = {
+    "join": 5000,
+    "welcome_back": 8000,
+    "message": 4000,
+    "gift": 15000,
+    "sticker": 15000,
 }
 
 
@@ -60,56 +61,61 @@ def make_event(event_type):
     return event
 
 
-def pick_event_type(allowed_types):
-    types = []
-    weights = []
-    for t in allowed_types:
-        types.append(t)
-        weights.append(EVENT_WEIGHTS[t])
-    return random.choices(types, weights=weights, k=1)[0]
-
-
-def run(interval, max_burst, allowed_types):
-    print(f"Mock YouTube service started (interval={interval}s, max_burst={max_burst})")
-    print(f"Event types: {', '.join(allowed_types)}")
-
+def run_type(event_type, delay_ms):
+    delay_s = delay_ms / 1000.0
     while True:
-        # Stagger individual events with random delays
-        num_events = random.randint(0, max_burst)
-        for i in range(num_events):
-            event = make_event(pick_event_type(allowed_types))
-            write_events([event])
-            label = event["type"].upper().ljust(8)
-            print(f"  {label} {event['name']}", flush=True)
-
-            if i < num_events - 1:
-                time.sleep(random.uniform(1.0, 4.0))
-
-        if not num_events:
-            print("  (no events)", flush=True)
-
-        time.sleep(random.uniform(interval * 0.5, interval * 1.5))
+        # Add some jitter (±30%)
+        jitter = random.uniform(0.7, 1.3)
+        time.sleep(delay_s * jitter)
+        event = make_event(event_type)
+        write_events([event])
+        label = event["type"].upper().ljust(15)
+        print(f"  {label} {event['name']}", flush=True)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mock YouTube chat events")
-    parser.add_argument("--interval", type=float, default=5, help="Seconds between batches")
-    parser.add_argument("--burst", type=int, default=3, help="Max events per batch")
-    parser.add_argument("--joins-only", action="store_true", help="Only generate join events")
-    parser.add_argument("--gifts-only", action="store_true", help="Only generate gift events")
-    parser.add_argument("--stickers-only", action="store_true", help="Only generate sticker events")
-    parser.add_argument("--welcome-back-only", action="store_true", help="Only generate welcome_back events")
+    parser.add_argument("--join-delay-ms", type=int, default=None,
+                        help="Delay between join events in ms (default: 5000)")
+    parser.add_argument("--welcome-back-delay-ms", type=int, default=None,
+                        help="Delay between welcome_back events in ms (default: 8000)")
+    parser.add_argument("--message-delay-ms", type=int, default=None,
+                        help="Delay between message events in ms (default: 4000)")
+    parser.add_argument("--gift-delay-ms", type=int, default=None,
+                        help="Delay between gift events in ms (default: 15000)")
+    parser.add_argument("--sticker-delay-ms", type=int, default=None,
+                        help="Delay between sticker events in ms (default: 15000)")
     args = parser.parse_args()
 
-    if args.joins_only:
-        types = ["join"]
-    elif args.gifts_only:
-        types = ["gift"]
-    elif args.stickers_only:
-        types = ["sticker"]
-    elif args.welcome_back_only:
-        types = ["welcome_back"]
-    else:
-        types = list(EVENT_WEIGHTS.keys())
+    delays = {
+        "join": args.join_delay_ms,
+        "welcome_back": args.welcome_back_delay_ms,
+        "message": args.message_delay_ms,
+        "gift": args.gift_delay_ms,
+        "sticker": args.sticker_delay_ms,
+    }
 
-    run(args.interval, args.burst, types)
+    # If any flag is explicitly set, only run those types.
+    # Otherwise use all defaults.
+    explicit = {k: v for k, v in delays.items() if v is not None}
+    if explicit:
+        active = explicit
+    else:
+        active = DEFAULT_DELAYS
+
+    print("Mock YouTube service started")
+    for etype, ms in active.items():
+        print(f"  {etype}: every {ms}ms", flush=True)
+
+    threads = []
+    for etype, ms in active.items():
+        t = threading.Thread(target=run_type, args=(etype, ms), daemon=True)
+        t.start()
+        threads.append(t)
+
+    # Keep main thread alive
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nStopped.", flush=True)

@@ -76,4 +76,4 @@ func _start_fade():
 	modulate.a = 1.0
 	# Fade to 0.4 opacity over 10s
 	active_tween = create_tween()
-	active_tween.tween_property(self, "modulate:a", 0.4, 10.0).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
+	active_tween.tween_property(self, "modulate:a", 0.6, 10.0).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)

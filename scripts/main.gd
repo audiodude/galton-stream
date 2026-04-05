@@ -76,6 +76,8 @@ var ball_script = preload("res://scripts/ball.gd")
 var sticker_script = preload("res://scripts/sticker_effect.gd")
 var superchat_script = preload("res://scripts/superchat_effect.gd")
 var superchat_side: int = 1  # Alternates between -1 (left) and 1 (right)
+var superchat_queue: Array = []  # [{name, amount_str}]
+const MAX_ACTIVE_SUPERCHATS := 2
 var peg_script = preload("res://scripts/peg.gd")
 var bin_areas: Array[Area2D] = []
 
@@ -125,21 +127,28 @@ func _process(delta):
 	_update_stats()
 	_update_spawn_rate(delta)
 
+	# Process superchat queue when a side is free and not draining/resetting
+	if not waiting_for_drain and not is_resetting and not superchat_queue.is_empty():
+		var free_side = _get_free_superchat_side()
+		if free_side != 0:
+			var next = superchat_queue.pop_front()
+			_do_spawn_superchat(next["name"], next["amount_str"], free_side)
+
 	if waiting_for_drain:
 		drain_timer += delta
 		var last_peg_y = peg_top_y + (PEG_ROWS - 1) * PEG_SPACING_Y
-		var all_past = true
+		var all_past_pegs = true
 		for ball in balls_node.get_children():
 			if is_instance_valid(ball) and ball.global_position.y < last_peg_y:
-				all_past = false
+				all_past_pegs = false
 				break
-		# Also wait for any active superchat effects to finish spawning
-		var superchat_active = false
+		# Wait for any superchat effects still spawning balls
+		var superchat_spawning = false
 		for child in get_children():
 			if child is Node2D and "active" in child and child.active:
-				superchat_active = false  # Don't block on spawning, just on balls in flight
+				superchat_spawning = true
 				break
-		if (all_past and not superchat_active) or drain_timer > 10.0:
+		if (all_past_pegs and not superchat_spawning) or drain_timer > 12.0:
 			waiting_for_drain = false
 			drain_timer = 0.0
 			_start_reset()
@@ -542,7 +551,28 @@ func _spawn_sticker_effect(user_name: String, amount: String):
 	# Add to the main scene so it can interact with walls
 	add_child(sticker)
 
+func _get_free_superchat_side() -> int:
+	var left_used = false
+	var right_used = false
+	for child in get_children():
+		if child is Node2D and "side" in child and "active" in child:
+			if child.side == -1:
+				left_used = true
+			elif child.side == 1:
+				right_used = true
+	if not left_used and not right_used:
+		# Both free — alternate from last used
+		return superchat_side * -1
+	if not left_used:
+		return -1
+	if not right_used:
+		return 1
+	return 0  # Both occupied
+
 func _spawn_superchat(user_name: String, amount_str: String):
+	superchat_queue.append({"name": user_name, "amount_str": amount_str})
+
+func _do_spawn_superchat(user_name: String, amount_str: String, side: int):
 	# Parse dollar amount
 	var dollars = int(amount_str.replace("$", "").replace(",", "").strip_edges())
 	if dollars <= 0:
@@ -551,8 +581,7 @@ func _spawn_superchat(user_name: String, amount_str: String):
 	# Pick a color from the current palette
 	var color = current_colors[randi() % current_colors.size()]
 
-	# Alternate sides
-	superchat_side *= -1
+	superchat_side = side
 
 	var effect = Node2D.new()
 	effect.set_script(superchat_script)
@@ -560,6 +589,6 @@ func _spawn_superchat(user_name: String, amount_str: String):
 	var typed_bin_areas: Array[Area2D] = []
 	for a in bin_areas:
 		typed_bin_areas.append(a)
-	effect.setup(user_name, dollars, color, superchat_side, typed_bin_areas)
+	effect.setup(user_name, dollars, color, side, typed_bin_areas)
 
 	add_child(effect)

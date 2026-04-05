@@ -51,6 +51,8 @@ sleep 5
 
 # Start FFmpeg — video from X11, audio from named pipe
 ffmpeg \
+    -loglevel warning \
+    -stats_period 30 \
     -thread_queue_size 4096 \
     -f x11grab \
     -video_size ${RESOLUTION} \
