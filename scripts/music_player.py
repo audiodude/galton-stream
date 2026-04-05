@@ -14,7 +14,7 @@ import time
 MUSIC_DIR = os.environ.get("MUSIC_DIR", "/data/mp3")
 AUDIO_PIPE = "/tmp/audio_pipe"
 SONG_FILE = "/tmp/current_song.txt"
-STATE_FILE = "/data/playlist_state.json"
+STATE_FILE = os.environ.get("STATE_FILE", "/data/playlist_state.json")
 
 
 def get_songs():
@@ -110,6 +110,12 @@ def play_loop():
 
     title_available_at = 0.0
 
+    # Open the pipe for writing and keep it open across songs.
+    # If each decoder opens/closes the pipe directly, the streaming
+    # FFmpeg sees EOF at every song boundary and stalls.
+    pipe_fd = os.open(AUDIO_PIPE, os.O_WRONLY)
+    print("Audio pipe opened for writing", flush=True)
+
     while True:
         for i in range(start_index, len(playlist)):
             song = playlist[i]
@@ -129,18 +135,25 @@ def play_loop():
 
             title_available_at = time.time() + max(0, delay) + duration
 
-            # Decode MP3 to raw PCM and write to the named pipe
-            # FFmpeg reads from the pipe — never blocks
-            proc = subprocess.run([
+            # Decode MP3 to raw PCM, piping stdout through our
+            # persistent pipe fd so it never sees EOF between songs.
+            proc = subprocess.Popen([
                 "ffmpeg", "-y",
                 "-i", song,
                 "-f", "s16le",
                 "-acodec", "pcm_s16le",
                 "-ar", "44100",
                 "-ac", "2",
-                AUDIO_PIPE
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                "pipe:1"
+            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                os.write(pipe_fd, chunk)
+
+            proc.wait()
             if proc.returncode != 0:
                 print(f"Warning: failed to play {title}", file=sys.stderr, flush=True)
 
