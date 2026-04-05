@@ -1,12 +1,6 @@
 #!/bin/bash
 set -e
 
-# Kill any leftover processes from a previous run
-pkill -9 -x godot 2>/dev/null || true
-pkill -9 -x ffmpeg 2>/dev/null || true
-pkill -9 -x Xvfb 2>/dev/null || true
-pkill -9 -f music_player.py 2>/dev/null || true
-
 YOUTUBE_URL="rtmp://a.rtmp.youtube.com/live2"
 RESOLUTION="1920x1080"
 OUTPUT_RES="1280x720"
