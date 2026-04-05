@@ -35,9 +35,6 @@ RAILWAY_API_TOKEN = os.environ.get("RAILWAY_API_TOKEN", "")
 GALTON_STREAM_SERVICE_ID = os.environ.get("GALTON_STREAM_SERVICE_ID", "")
 GALTON_STREAM_ENVIRONMENT_ID = os.environ.get("RAILWAY_ENVIRONMENT_ID", "")
 
-# YouTube Data API (optional, for broadcast status checks)
-YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
-
 # YouTube OAuth (for authenticated broadcast status)
 YOUTUBE_CLIENT_ID = os.environ.get("YOUTUBE_CLIENT_ID", "")
 YOUTUBE_CLIENT_SECRET = os.environ.get("YOUTUBE_CLIENT_SECRET", "")
