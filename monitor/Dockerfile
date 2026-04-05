@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY monitor/monitor.py /app/monitor.py
+COPY monitor/ /app/
 COPY assets/backup.png /app/backup.png
 
 CMD ["python3", "monitor.py"]
