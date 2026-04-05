@@ -51,10 +51,12 @@ sleep 5
 
 # Start FFmpeg — video from X11, audio from named pipe
 ffmpeg \
+    -thread_queue_size 4096 \
     -f x11grab \
     -video_size ${RESOLUTION} \
     -framerate ${FPS} \
     -i :99 \
+    -thread_queue_size 4096 \
     -f s16le \
     -ar 44100 \
     -ac 2 \
@@ -66,7 +68,7 @@ ffmpeg \
     -tune zerolatency \
     -b:v 2500k \
     -maxrate 2500k \
-    -bufsize 5000k \
+    -bufsize 7500k \
     -pix_fmt yuv420p \
     -g 60 \
     -c:a aac \
