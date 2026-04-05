@@ -98,6 +98,7 @@ if __name__ == "__main__":
     parser.add_argument("--joins-only", action="store_true", help="Only generate join events")
     parser.add_argument("--gifts-only", action="store_true", help="Only generate gift events")
     parser.add_argument("--stickers-only", action="store_true", help="Only generate sticker events")
+    parser.add_argument("--welcome-back-only", action="store_true", help="Only generate welcome_back events")
     args = parser.parse_args()
 
     if args.joins_only:
@@ -106,6 +107,8 @@ if __name__ == "__main__":
         types = ["gift"]
     elif args.stickers_only:
         types = ["sticker"]
+    elif args.welcome_back_only:
+        types = ["welcome_back"]
     else:
         types = list(EVENT_WEIGHTS.keys())
 
