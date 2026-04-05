@@ -8,6 +8,7 @@ import os
 import random
 import subprocess
 import sys
+import threading
 import time
 
 MUSIC_DIR = os.environ.get("MUSIC_DIR", "/data/mp3")
@@ -89,9 +90,24 @@ def play_loop():
         random.shuffle(playlist)
         start_index = 0
 
-    # Track when the current title is allowed to change, so we don't
-    # announce the next song while the previous one is still audible
-    # (the streaming FFmpeg buffers audio well ahead of real-time).
+    # Schedule title updates on a timer so the decode loop never blocks.
+    pending_timer = [None]  # mutable container for the timer reference
+
+    def schedule_title(title, delay):
+        """Update song title after delay seconds, on a background thread."""
+        if pending_timer[0] is not None:
+            pending_timer[0].cancel()
+        if delay <= 0:
+            write_song_name(title)
+            print(f"Now playing: {title}", flush=True)
+        else:
+            def do_update():
+                write_song_name(title)
+                print(f"Now playing: {title}", flush=True)
+            pending_timer[0] = threading.Timer(delay, do_update)
+            pending_timer[0].daemon = True
+            pending_timer[0].start()
+
     title_available_at = 0.0
 
     while True:
@@ -101,22 +117,20 @@ def play_loop():
             title = song_title(song)
             duration = get_duration(song)
 
-            # Wait for the previous song's real-time playback to finish
-            # before updating the title, but start decoding immediately
+            # Schedule title update for when the previous song's
+            # real-time playback finishes. Decode starts immediately
             # so the audio pipe never goes dry.
-            wait = title_available_at - time.time()
-            if wait > 0:
-                print(f"Delaying title update {wait:.0f}s for previous track", flush=True)
-                time.sleep(wait)
+            delay = title_available_at - time.time()
+            schedule_title(
+                title,
+                max(0, delay),
+            )
+            print(f"Decoding: {title} ({i + 1}/{len(playlist)}, {duration:.0f}s)", flush=True)
 
-            write_song_name(title)
-            print(f"Now playing: {title} ({i + 1}/{len(playlist)}, {duration:.0f}s)", flush=True)
-
-            start_time = time.time()
-            title_available_at = start_time + duration
+            title_available_at = time.time() + max(0, delay) + duration
 
             # Decode MP3 to raw PCM and write to the named pipe
-            # FFmpeg reads from the pipe
+            # FFmpeg reads from the pipe — never blocks
             proc = subprocess.run([
                 "ffmpeg", "-y",
                 "-i", song,
