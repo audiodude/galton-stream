@@ -101,7 +101,7 @@ The S3 bucket path is configured in `start.sh`. Music files are cached on a pers
 
 ## Streaming (Docker)
 
-Deploy via Railway or run locally:
+Railway auto-deploys from the `release` branch. Deploy via Railway or run locally:
 
 ```bash
 docker build -t galton-stream .
