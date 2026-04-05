@@ -83,22 +83,17 @@ ffmpeg \
     "${YOUTUBE_URL}/${YOUTUBE_STREAM_KEY}" &
 FFMPEG_PID=$!
 
-# Start watchdog if Telegram credentials are available
-if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-    /app/scripts/watchdog.sh &
-    WATCHDOG_PID=$!
-else
-    echo "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set, skipping watchdog"
-    WATCHDOG_PID=""
-fi
+# Start health server (replaces watchdog.sh — exposes /health for galton-monitor)
+python3 /app/scripts/health_server.py &
+HEALTH_PID=$!
 
 # If any process dies, kill the others and exit
-trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $WATCHDOG_PID 2>/dev/null; exit" SIGTERM SIGINT
+trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $HEALTH_PID 2>/dev/null; exit" SIGTERM SIGINT
 
 while kill -0 $GODOT_PID 2>/dev/null && kill -0 $FFMPEG_PID 2>/dev/null && kill -0 $MUSIC_PID 2>/dev/null; do
     sleep 5
 done
 
 echo "Process exited, shutting down..."
-kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $WATCHDOG_PID 2>/dev/null
+kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $HEALTH_PID 2>/dev/null
 exit 1
