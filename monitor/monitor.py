@@ -137,6 +137,166 @@ def check_youtube_status():
         return f"error: {e}", None
 
 
+def youtube_api_request(url, method="GET", body=None):
+    """Make an authenticated YouTube API request. Returns parsed JSON or None."""
+    token = get_access_token()
+    if not token:
+        log("No access token for YouTube API request")
+        return None
+    headers = {"Authorization": f"Bearer {token}"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    else:
+        data = None
+    try:
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        resp = urllib.request.urlopen(req, timeout=15)
+        return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        log(f"YouTube API error ({e.code}): {error_body}")
+        return None
+    except Exception as e:
+        log(f"YouTube API request failed: {e}")
+        return None
+
+
+def get_recent_broadcast():
+    """Get the most recent broadcast (active or complete). Returns broadcast resource or None."""
+    # Try active first
+    for status in ("active", "complete"):
+        result = youtube_api_request(
+            "https://www.googleapis.com/youtube/v3/liveBroadcasts"
+            f"?part=snippet,status,contentDetails&broadcastStatus={status}&maxResults=1"
+        )
+        if result and result.get("items"):
+            return result["items"][0]
+    return None
+
+
+def get_bound_stream_id(broadcast):
+    """Get the stream ID bound to a broadcast."""
+    content_details = broadcast.get("contentDetails", {})
+    return content_details.get("boundStreamId")
+
+
+def create_new_broadcast(old_broadcast):
+    """Create a new broadcast cloning settings from the old one.
+    Returns (new_broadcast_id, new_video_id) or (None, None)."""
+    snippet = old_broadcast.get("snippet", {})
+    title = snippet.get("title", "Galton Board Live Stream")
+    description = snippet.get("description", "")
+
+    body = {
+        "snippet": {
+            "title": title,
+            "description": description,
+            "scheduledStartTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        },
+        "status": {
+            "privacyStatus": "public",
+            "selfDeclaredMadeForKids": False,
+        },
+        "contentDetails": {
+            "enableAutoStart": True,
+            "enableAutoStop": False,
+            "latencyPreference": "ultraLow",
+        },
+    }
+
+    result = youtube_api_request(
+        "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,status,contentDetails",
+        method="POST",
+        body=body,
+    )
+    if not result:
+        return None, None
+
+    new_id = result.get("id")
+    log(f"Created new broadcast: {new_id}")
+    return new_id, new_id  # broadcast ID is also the video ID
+
+
+def bind_stream_to_broadcast(broadcast_id, stream_id):
+    """Bind an existing stream to a new broadcast."""
+    result = youtube_api_request(
+        "https://www.googleapis.com/youtube/v3/liveBroadcasts/bind"
+        f"?part=id,contentDetails&id={broadcast_id}&streamId={stream_id}",
+        method="POST",
+    )
+    if result:
+        log(f"Bound stream {stream_id} to broadcast {broadcast_id}")
+        return True
+    return False
+
+
+def update_broadcast_description(broadcast_id, new_description):
+    """Update a broadcast's description."""
+    result = youtube_api_request(
+        "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet",
+        method="PUT",
+        body={
+            "id": broadcast_id,
+            "snippet": {
+                "title": "Galton Board Live Stream",  # required by API even for description update
+                "description": new_description,
+                "scheduledStartTime": "1970-01-01T00:00:00Z",  # required but ignored for complete
+            },
+        },
+    )
+    return result is not None
+
+
+def handle_youtube_broadcast_ended():
+    """Detect ended broadcast, create new one, update old description.
+    Returns True if a new broadcast was created."""
+    old_broadcast = get_recent_broadcast()
+    if not old_broadcast:
+        log("No recent broadcast found")
+        return False
+
+    old_status = old_broadcast.get("status", {}).get("lifeCycleStatus", "")
+    old_id = old_broadcast.get("id", "")
+
+    if old_status not in ("complete", "revoked"):
+        log(f"Broadcast {old_id} status is {old_status}, not ended")
+        return False
+
+    log(f"Broadcast {old_id} has ended ({old_status}). Creating replacement...")
+
+    # Get the stream bound to the old broadcast so we can reuse it
+    stream_id = get_bound_stream_id(old_broadcast)
+
+    # Create new broadcast with same settings
+    new_id, new_video_id = create_new_broadcast(old_broadcast)
+    if not new_id:
+        log("Failed to create new broadcast")
+        return False
+
+    # Bind the same stream to the new broadcast
+    if stream_id:
+        if not bind_stream_to_broadcast(new_id, stream_id):
+            log(f"Failed to bind stream {stream_id} to new broadcast {new_id}")
+    else:
+        log("No stream ID found on old broadcast — FFmpeg will auto-bind on connect")
+
+    # Update old broadcast description to point to new one
+    old_snippet = old_broadcast.get("snippet", {})
+    old_desc = old_snippet.get("description", "")
+    redirect_line = f"\n\nWatch Live! https://www.youtube.com/live/{new_video_id}"
+    update_broadcast_description(old_id, old_desc + redirect_line)
+
+    msg = (
+        f"{PREFIX} YouTube broadcast ended. Created new broadcast: "
+        f"https://www.youtube.com/live/{new_video_id} "
+        f"(old: https://www.youtube.com/live/{old_id})"
+    )
+    send_telegram(msg)
+
+    return True
+
+
 def on_state_transition(old_state, new_state, reason):
     """Called on every state transition. Checks YouTube and alerts."""
     yt_status, _ = check_youtube_status()
@@ -347,20 +507,23 @@ def main():
             if yt_live is False:
                 youtube_failures += 1
                 log(f"YouTube down ({yt_status}), yt_fail #{youtube_failures}")
-                if youtube_failures == 2:
-                    # Two consecutive checks (240s) with no broadcast — restart FFmpeg
-                    # so it reconnects to YouTube RTMP
-                    msg = (f"{PREFIX} YouTube broadcast down ({yt_status}) but "
-                           f"galton-stream healthy. Restarting FFmpeg to reconnect.")
+                if youtube_failures == 1:
+                    # First detection — try to create a new broadcast
+                    # (the old one may have been ended by YouTube)
+                    if handle_youtube_broadcast_ended():
+                        log("New broadcast created, restarting FFmpeg to connect...")
+                        restart_ffmpeg()
+                elif youtube_failures == 3:
+                    # 360s — FFmpeg restart in case it didn't reconnect
+                    msg = (f"{PREFIX} YouTube still down ({yt_status}). "
+                           f"Restarting FFmpeg to reconnect.")
                     send_telegram(msg)
-                    log(msg)
                     restart_ffmpeg()
-                elif youtube_failures == 4:
-                    # 480s — full container restart
+                elif youtube_failures == 5:
+                    # 600s — full container restart
                     msg = (f"{PREFIX} YouTube still down after FFmpeg restart. "
                            f"Restarting container.")
                     send_telegram(msg)
-                    log(msg)
                     restart_galton_stream()
                     youtube_failures = 0
             else:

@@ -17,7 +17,7 @@ import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-SCOPES = "https://www.googleapis.com/auth/youtube.readonly"
+SCOPES = "https://www.googleapis.com/auth/youtube.force-ssl"
 REDIRECT_URI = "http://localhost:8085"
 
 auth_code = None
