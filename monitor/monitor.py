@@ -155,7 +155,7 @@ def youtube_api_request(url, method="GET", body=None):
 def get_recent_broadcast():
     """Get the most recent broadcast (active or complete). Returns broadcast resource or None."""
     # Try active first
-    for status in ("active", "complete"):
+    for status in ("active", "completed"):
         result = youtube_api_request(
             "https://www.googleapis.com/youtube/v3/liveBroadcasts"
             f"?part=snippet,status,contentDetails&broadcastStatus={status}&maxResults=1"
