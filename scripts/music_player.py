@@ -134,6 +134,7 @@ def play_loop():
             # persistent pipe fd so it never sees EOF between songs.
             proc = subprocess.Popen([
                 "ffmpeg", "-y",
+                "-re",
                 "-i", song,
                 "-f", "s16le",
                 "-acodec", "pcm_s16le",
