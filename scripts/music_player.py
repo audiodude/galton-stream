@@ -89,16 +89,31 @@ def play_loop():
         random.shuffle(playlist)
         start_index = 0
 
+    # Track when the current title is allowed to change, so we don't
+    # announce the next song while the previous one is still audible
+    # (the streaming FFmpeg buffers audio well ahead of real-time).
+    title_available_at = 0.0
+
     while True:
         for i in range(start_index, len(playlist)):
             song = playlist[i]
             save_state(playlist, i)
             title = song_title(song)
             duration = get_duration(song)
+
+            # Wait for the previous song's real-time playback to finish
+            # before updating the title, but start decoding immediately
+            # so the audio pipe never goes dry.
+            wait = title_available_at - time.time()
+            if wait > 0:
+                print(f"Delaying title update {wait:.0f}s for previous track", flush=True)
+                time.sleep(wait)
+
             write_song_name(title)
             print(f"Now playing: {title} ({i + 1}/{len(playlist)}, {duration:.0f}s)", flush=True)
 
             start_time = time.time()
+            title_available_at = start_time + duration
 
             # Decode MP3 to raw PCM and write to the named pipe
             # FFmpeg reads from the pipe
@@ -114,15 +129,6 @@ def play_loop():
 
             if proc.returncode != 0:
                 print(f"Warning: failed to play {title}", file=sys.stderr, flush=True)
-
-            # The decoder may finish long before real-time playback
-            # (the streaming FFmpeg buffers audio ahead). Wait for the
-            # actual song duration before announcing the next track.
-            elapsed = time.time() - start_time
-            remaining = duration - elapsed
-            if remaining > 0:
-                print(f"Decoder finished {remaining:.0f}s early, waiting", flush=True)
-                time.sleep(remaining)
 
         # Reshuffle for next loop
         random.shuffle(playlist)
