@@ -75,8 +75,10 @@ while true; do
         continue
     fi
 
-    # Check total network TX bytes (container-level)
-    bytes_now=$(awk '/eth0|ens|veth/{s+=$10} END {print s+0}' /proc/net/dev 2>/dev/null)
+    # Check total network TX bytes (container-level, skip loopback and headers)
+    bytes_now=$(awk 'NR>2 && !/lo:/{s+=$10} END {print s+0}' /proc/net/dev 2>/dev/null)
+
+    echo "TX bytes: $bytes_now (prev: ${prev_bytes:-none})" >&2
 
     if [ -n "$prev_bytes" ] && [ "$bytes_now" = "$prev_bytes" ]; then
         stall_count=$((stall_count + 1))
