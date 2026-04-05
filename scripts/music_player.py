@@ -62,6 +62,18 @@ def write_song_name(title):
     os.replace(tmp, SONG_FILE)
 
 
+def get_duration(path):
+    """Get track duration in seconds via ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True)
+        return float(result.stdout.strip())
+    except (ValueError, AttributeError):
+        return 0
+
+
 def play_loop():
     # Create named pipe
     if os.path.exists(AUDIO_PIPE):
@@ -82,8 +94,11 @@ def play_loop():
             song = playlist[i]
             save_state(playlist, i)
             title = song_title(song)
+            duration = get_duration(song)
             write_song_name(title)
-            print(f"Now playing: {title} ({i + 1}/{len(playlist)})", flush=True)
+            print(f"Now playing: {title} ({i + 1}/{len(playlist)}, {duration:.0f}s)", flush=True)
+
+            start_time = time.time()
 
             # Decode MP3 to raw PCM and write to the named pipe
             # FFmpeg reads from the pipe
@@ -99,6 +114,15 @@ def play_loop():
 
             if proc.returncode != 0:
                 print(f"Warning: failed to play {title}", file=sys.stderr, flush=True)
+
+            # The decoder may finish long before real-time playback
+            # (the streaming FFmpeg buffers audio ahead). Wait for the
+            # actual song duration before announcing the next track.
+            elapsed = time.time() - start_time
+            remaining = duration - elapsed
+            if remaining > 0:
+                print(f"Decoder finished {remaining:.0f}s early, waiting", flush=True)
+                time.sleep(remaining)
 
         # Reshuffle for next loop
         random.shuffle(playlist)
