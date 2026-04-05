@@ -99,9 +99,27 @@ When a new song starts, the title appears at full opacity for 5 seconds, then fa
 
 The S3 bucket path is configured in `start.sh`. Music files are cached on a persistent volume at `/data/mp3` so they only sync once.
 
-## Streaming (Docker)
+## Deployment
 
-Railway auto-deploys from the `release` branch. Deploy via Railway or run locally:
+Railway auto-deploys both services from the `release` branch (not `main`). Push to `main` for development, then merge to `release` to deploy.
+
+### Two-service architecture
+
+| Service | Purpose | Watch paths |
+|---------|---------|-------------|
+| **galton-stream** | Godot + FFmpeg streaming to YouTube | Everything except `monitor/` |
+| **galton-monitor** | Polls galton-stream health, manages YouTube broadcast recovery | `monitor/**` |
+
+galton-monitor polls galton-stream's `/health` endpoint every 120s over Railway internal networking. Recovery escalation:
+
+1. **1 fail (120s)** — start fallback stream (backup image to YouTube)
+2. **5 fails (600s)** — restart galton-stream container
+3. **6 fails (720s)** — redeploy galton-stream via Railway API
+4. **7 fails (840s)** — alert that all recovery failed
+
+If YouTube kills the broadcast while galton-stream is healthy, galton-monitor creates a new broadcast with the same settings and updates the old broadcast's description with a link to the new one.
+
+### Running locally
 
 ```bash
 docker build -t galton-stream .
