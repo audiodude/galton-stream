@@ -8,7 +8,7 @@ Recovery escalation:
   6 fails (720s) → redeploy galton-stream via Railway API
   7 fails (840s) → alert that all recovery failed
 
-On every state transition, checks YouTube broadcast status via OAuth.
+Checks YouTube broadcast status via OAuth on every poll and state transition.
 """
 
 import json
