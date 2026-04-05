@@ -23,6 +23,8 @@ RUN apt-get update && apt-get install -y \
     unclutter \
     x11-xserver-utils \
     awscli \
+    curl \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Godot 4.4
