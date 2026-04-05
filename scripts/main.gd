@@ -466,6 +466,9 @@ func _on_chat_event(event: Dictionary):
 		"join":
 			text = "Welcome %s!" % name
 			color = current_colors[randi() % current_colors.size()]
+		"welcome_back":
+			text = "Welcome back %s!" % name
+			color = current_colors[randi() % current_colors.size()]
 		"gift":
 			_spawn_superchat(name, event.get("amount", "$1"))
 			return
@@ -481,9 +484,9 @@ func _on_chat_event(event: Dictionary):
 	var container = HBoxContainer.new()
 	container.position = Vector2(40, 500 + chat_display.get_child_count() * 40)
 
-	if event_type == "join":
+	if event_type == "join" or event_type == "welcome_back":
 		var welcome_label = Label.new()
-		welcome_label.text = "Welcome "
+		welcome_label.text = "Welcome back " if event_type == "welcome_back" else "Welcome "
 		welcome_label.add_theme_font_size_override("font_size", 28)
 		welcome_label.add_theme_color_override("font_color", current_colors[randi() % current_colors.size()])
 		container.add_child(welcome_label)

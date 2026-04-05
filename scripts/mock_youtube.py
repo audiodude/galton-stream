@@ -39,6 +39,7 @@ STICKER_AMOUNTS = ["$1", "$2", "$5", "$10"]
 # Weighted event types: joins are most common, gifts/stickers are rare
 EVENT_WEIGHTS = {
     "join": 5,
+    "welcome_back": 3,
     "message": 3,
     "gift": 1,
     "sticker": 1,

@@ -88,7 +88,7 @@ def run():
     poll_ms = POLL_INTERVAL * 1000
     # Skip initial batch (history) by doing one fetch and ignoring results
     first_poll = True
-    seen_users = set()  # Track users we've already welcomed
+    seen_users = {}  # channel_id -> last_seen timestamp
 
     while True:
         # Refresh access token every 45 minutes
@@ -128,7 +128,9 @@ def run():
             # Remember existing chatters so we don't welcome them again
             for item in data.get("items", []):
                 author = item.get("authorDetails", {})
-                seen_users.add(author.get("channelId", ""))
+                cid = author.get("channelId", "")
+                if cid:
+                    seen_users[cid] = time.time()
             print(f"Skipped {len(data.get('items', []))} historical messages, "
                   f"{len(seen_users)} known users", flush=True)
             time.sleep(poll_ms / 1000)
@@ -142,14 +144,26 @@ def run():
             name = author.get("displayName", "Unknown")
             channel_id = author.get("channelId", "")
 
-            # First message from a user = welcome them
-            if channel_id and channel_id not in seen_users:
-                seen_users.add(channel_id)
-                events.append({
-                    "type": "join",
-                    "name": name,
-                    "time": time.time(),
-                })
+            WELCOME_BACK_THRESHOLD = 12 * 3600  # 12 hours
+
+            if channel_id:
+                last_seen = seen_users.get(channel_id)
+                now = time.time()
+                if last_seen is None:
+                    # First time seeing this user
+                    events.append({
+                        "type": "join",
+                        "name": name,
+                        "time": now,
+                    })
+                elif now - last_seen >= WELCOME_BACK_THRESHOLD:
+                    # Returning after 12+ hours
+                    events.append({
+                        "type": "welcome_back",
+                        "name": name,
+                        "time": now,
+                    })
+                seen_users[channel_id] = now
 
             if msg_type == "superChatEvent":
                 events.append({
