@@ -9,7 +9,7 @@ const BALL_RADIUS := 7.0
 const BALL_BOUNCE := 0.45
 const BALL_FRICTION := 0.15
 const SPAWN_INTERVAL := 0.18
-var balls_per_round: int = 500
+var balls_per_round: int = int(OS.get_environment("BALLS_PER_ROUND")) if OS.get_environment("BALLS_PER_ROUND") != "" else 500
 const MAX_ACTIVE_BALLS := 600
 const BIN_COUNT := PEG_ROWS + 1
 
@@ -401,7 +401,11 @@ func _update_spawn_rate(delta):
 	spawn_timer.wait_time = SPAWN_INTERVAL / rate_current
 
 func _pick_round_colors():
-	balls_per_round = randi_range(472, 512)
+	var env_bpr = OS.get_environment("BALLS_PER_ROUND")
+	if env_bpr != "":
+		balls_per_round = int(env_bpr)
+	else:
+		balls_per_round = randi_range(472, 512)
 	var shuffled = ALL_COLORS.duplicate()
 	shuffled.shuffle()
 	var count = 2 if randf() < 0.5 else 3
