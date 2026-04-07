@@ -13,12 +13,32 @@ var flashing: bool = false
 var flash_colors: Array[Color] = []
 var flash_index: int = 0
 var active_tween: Tween = null
+var note_icon: TextureRect
+
+const ICON_SIZE := 28
+const ICON_GAP := 6
 
 func _ready():
-	add_theme_font_size_override("font_size", 20)
+	add_theme_font_size_override("font_size", 24)
 	add_theme_color_override("font_color", Color(0.6, 0.65, 0.8, 0.7))
-	position = Vector2(20, 1045)
-	size = Vector2(600, 30)
+	autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	max_lines_visible = 2
+
+	var label_x := 20 + ICON_SIZE + ICON_GAP
+	position = Vector2(label_x, 970)
+	size = Vector2(270 - ICON_SIZE - ICON_GAP, 80)
+
+	# Add music note icon as sibling, vertically aligned with first line
+	note_icon = TextureRect.new()
+	var img = Image.new()
+	img.load("res://assets/music_note.svg")
+	img.resize(ICON_SIZE, ICON_SIZE)
+	var tex = ImageTexture.create_from_image(img)
+	note_icon.texture = tex
+	note_icon.position = Vector2(20, 970 + 2)
+	note_icon.z_index = 20
+	note_icon.modulate = Color(0.6, 0.65, 0.8, 0.7)
+	get_parent().call_deferred("add_child", note_icon)
 
 func _process(delta):
 	poll_timer -= delta
@@ -36,6 +56,8 @@ func _process(delta):
 			flash_timer = FLASH_INTERVAL
 			flash_index = (flash_index + 1) % flash_colors.size()
 			add_theme_color_override("font_color", flash_colors[flash_index])
+			if note_icon:
+				note_icon.modulate = flash_colors[flash_index]
 
 func _read_song():
 	if not FileAccess.file_exists(SONG_FILE):
@@ -57,8 +79,10 @@ func _get_round_colors() -> Array[Color]:
 	return [Color.WHITE] as Array[Color]
 
 func _show_song(title: String):
-	text = "♪ " + title
+	text = title
 	modulate.a = 1.0
+	if note_icon:
+		note_icon.modulate = Color(1, 1, 1, 1)
 
 	if active_tween and active_tween.is_valid():
 		active_tween.kill()
@@ -74,6 +98,11 @@ func _show_song(title: String):
 func _start_fade():
 	add_theme_color_override("font_color", Color(0.6, 0.65, 0.8, 0.7))
 	modulate.a = 1.0
-	# Fade to 0.4 opacity over 10s
+	if note_icon:
+		note_icon.modulate = Color(0.6, 0.65, 0.8, 0.7)
+	# Fade to 0.6 opacity over 10s
 	active_tween = create_tween()
 	active_tween.tween_property(self, "modulate:a", 0.6, 10.0).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
+	if note_icon:
+		var icon_tween = create_tween()
+		icon_tween.tween_property(note_icon, "modulate:a", 0.6, 10.0).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
