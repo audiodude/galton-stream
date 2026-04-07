@@ -5,11 +5,9 @@ and pipes raw audio to a named pipe for FFmpeg."""
 import glob
 import json
 import os
-import queue
 import random
 import subprocess
 import sys
-import threading
 import time
 
 MUSIC_DIR = os.environ.get("MUSIC_DIR", "/data/mp3")
@@ -64,18 +62,6 @@ def write_song_name(title):
     os.replace(tmp, SONG_FILE)
 
 
-def get_duration(path):
-    """Get track duration in seconds via ffprobe."""
-    try:
-        result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True)
-        return float(result.stdout.strip())
-    except (ValueError, AttributeError):
-        return 0
-
-
 def play_loop():
     # Create named pipe
     if os.path.exists(AUDIO_PIPE):
@@ -91,24 +77,6 @@ def play_loop():
         random.shuffle(playlist)
         start_index = 0
 
-    # Queue of (absolute_time, title) — a background thread processes
-    # them in order, sleeping until each one is due.
-    title_queue = queue.Queue()
-
-    def title_worker():
-        while True:
-            show_at, title = title_queue.get()
-            wait = show_at - time.time()
-            if wait > 0:
-                time.sleep(wait)
-            write_song_name(title)
-            print(f"Now playing: {title}", flush=True)
-
-    t = threading.Thread(target=title_worker, daemon=True)
-    t.start()
-
-    title_available_at = 0.0
-
     # Open the pipe for writing and keep it open across songs.
     # If each decoder opens/closes the pipe directly, the streaming
     # FFmpeg sees EOF at every song boundary and stalls.
@@ -120,15 +88,8 @@ def play_loop():
             song = playlist[i]
             save_state(playlist, i)
             title = song_title(song)
-            duration = get_duration(song)
-
-            # Queue the title to display when this song actually starts
-            # playing (after the previous song's real-time duration).
-            show_at = max(title_available_at, time.time())
-            title_queue.put((show_at, title))
-            print(f"Decoding: {title} ({i + 1}/{len(playlist)}, {duration:.0f}s)", flush=True)
-
-            title_available_at = show_at + duration
+            write_song_name(title)
+            print(f"Now playing: {title} ({i + 1}/{len(playlist)})", flush=True)
 
             # Decode MP3 to raw PCM, piping stdout through our
             # persistent pipe fd so it never sees EOF between songs.
@@ -159,7 +120,6 @@ def play_loop():
                 time.sleep(10)
                 pipe_fd = os.open(AUDIO_PIPE, os.O_WRONLY)
                 print("Audio pipe reopened", flush=True)
-                title_available_at = 0.0
                 continue
 
             proc.wait()
