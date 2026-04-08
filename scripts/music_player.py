@@ -75,7 +75,7 @@ def play_loop():
         for i in range(start_index, len(playlist)):
             song = playlist[i]
             save_state(playlist, i)
-            print(f"Decoding: {os.path.basename(song)} ({i + 1}/{len(playlist)})", flush=True)
+            print(f"[audio] DECODE idx={i} {os.path.basename(song)} ({i + 1}/{len(playlist)})", flush=True)
 
             proc = subprocess.Popen([
                 "ffmpeg", "-y",

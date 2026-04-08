@@ -82,11 +82,13 @@ def run():
             title = song_title(song)
             write_song_name(title)
             duration = get_cached_duration(song)
-            print(f"Title: {title} ({current_index + 1}/{len(playlist)}, {duration:.1f}s)", flush=True)
+            print(f"[title] WRITE '{title}' idx={current_index} duration={duration:.1f}s", flush=True)
         else:
             duration = 0
+            print(f"[title] index {current_index} past end of playlist ({len(playlist)})", flush=True)
 
         # Sleep through the song, checking state file periodically for re-sync
+        song_start = time.monotonic()
         elapsed = 0.0
         while elapsed < duration:
             sleep_time = min(SYNC_INTERVAL, duration - elapsed)
@@ -96,11 +98,12 @@ def run():
             # Check if music_player has moved to a different index
             playlist_now, index_now = load_state()
             if playlist_now is None:
+                print(f"[title] sync check: state file missing, elapsed={elapsed:.1f}s", flush=True)
                 continue
 
             if playlist_now != playlist:
                 # Playlist was reshuffled
-                print("Playlist reshuffled, re-syncing", flush=True)
+                print(f"[title] RESHUFFLE detected at elapsed={elapsed:.1f}s, state index={index_now}", flush=True)
                 playlist = playlist_now
                 durations.clear()
                 current_index = index_now
@@ -108,12 +111,18 @@ def run():
 
             if index_now != current_index:
                 # Music player is on a different song than we expect
-                print(f"Re-sync: expected index {current_index}, "
-                      f"state has {index_now}", flush=True)
+                wall = time.monotonic() - song_start
+                print(f"[title] RESYNC: was idx={current_index}, state has idx={index_now}, "
+                      f"wall={wall:.1f}s, expected={duration:.1f}s", flush=True)
                 current_index = index_now
                 break
+            else:
+                print(f"[title] sync ok: idx={current_index}, elapsed={elapsed:.1f}/{duration:.1f}s", flush=True)
         else:
             # Song duration elapsed normally, advance to next
+            wall = time.monotonic() - song_start
+            print(f"[title] ADVANCE: idx {current_index} -> {current_index + 1}, "
+                  f"wall={wall:.1f}s, ffprobe={duration:.1f}s, drift={wall - duration:.2f}s", flush=True)
             current_index += 1
             if current_index >= len(playlist):
                 # Wait for reshuffle
