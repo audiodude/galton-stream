@@ -16,8 +16,22 @@ POLL_INTERVAL = 5
 
 
 def load_token_config():
+    # Prefer env vars (same ones galton-monitor uses)
+    client_id = os.environ.get("YOUTUBE_CLIENT_ID", "")
+    client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET", "")
+    refresh_token = os.environ.get("YOUTUBE_REFRESH_TOKEN", "")
+    if client_id and client_secret and refresh_token:
+        print("Using YouTube OAuth from environment variables", flush=True)
+        return {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+        }
+    # Fall back to token file
     if not os.path.exists(TOKEN_FILE):
-        print(f"ERROR: {TOKEN_FILE} not found. Run youtube_auth.py first.", file=sys.stderr)
+        print(f"ERROR: No YouTube OAuth credentials. Set YOUTUBE_CLIENT_ID, "
+              f"YOUTUBE_CLIENT_SECRET, YOUTUBE_REFRESH_TOKEN env vars, "
+              f"or create {TOKEN_FILE}.", file=sys.stderr)
         sys.exit(1)
     with open(TOKEN_FILE) as f:
         return json.load(f)
