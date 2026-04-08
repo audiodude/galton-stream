@@ -465,7 +465,7 @@ def set_state(new_state, reason):
 
 
 def main():
-    global current_state, consecutive_failures
+    global current_state, consecutive_failures, chat_poller_dead_count, title_writer_dead_count
 
     log(f"Starting monitor, polling {GALTON_STREAM_URL} every {POLL_INTERVAL}s")
     log(f"YouTube OAuth: client_id={'set' if YOUTUBE_CLIENT_ID else 'MISSING'}, "
