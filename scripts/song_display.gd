@@ -6,6 +6,7 @@ const FLASH_DURATION := 1.5
 const FLASH_INTERVAL := 0.1
 
 var poll_timer: float = 0.0
+var fps_timer: float = 0.0
 var current_song: String = ""
 var flash_timer: float = 0.0
 var flash_elapsed: float = 0.0
@@ -45,6 +46,11 @@ func _process(delta):
 	if poll_timer <= 0:
 		poll_timer = POLL_INTERVAL
 		_read_song()
+
+	fps_timer -= delta
+	if fps_timer <= 0:
+		fps_timer = 60.0
+		print("[godot] FPS: %.1f" % Engine.get_frames_per_second())
 
 	if flashing:
 		flash_elapsed += delta
