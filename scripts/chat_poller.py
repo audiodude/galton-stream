@@ -66,7 +66,16 @@ def find_active_broadcast(access_token):
         "https://www.googleapis.com/youtube/v3/liveBroadcasts"
         "?part=snippet,contentDetails&broadcastStatus=active&broadcastType=all"
     )
-    data = api_get(url, access_token)
+    try:
+        data = api_get(url, access_token)
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()
+        except Exception:
+            pass
+        print(f"Broadcast API error: {e.code} {body}", file=sys.stderr, flush=True)
+        return None, None
     items = data.get("items", [])
     if not items:
         return None, None
