@@ -107,3 +107,4 @@ done
 echo "Process exited, shutting down..."
 kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null
 exit 1
+
