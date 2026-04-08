@@ -71,7 +71,7 @@ ffmpeg \
     -video_size ${RESOLUTION} \
     -framerate ${FPS} \
     -i :99 \
-    -thread_queue_size 64 \
+    -thread_queue_size 512 \
     -f s16le \
     -ar 44100 \
     -ac 2 \
