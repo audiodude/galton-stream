@@ -6,7 +6,7 @@ If you ever find yourself telling the user "Now try <action>", or "Don't forget 
 
 ## Deployment
 
-Railway deploys from the `release` branch, NOT `main`. After pushing changes to `main`, **squash merge** to `release` and push to deploy. Use `git merge --squash main` (NOT a regular merge) — Railway skips merge commits because it diffs against the first parent and sees "no changes to watched files." galton-stream and galton-monitor are separate Railway services in the same repo with watch paths so they deploy independently.
+Railway deploys from the `release` branch, NOT `main`. After pushing changes to `main`, merge to `release` and push to deploy. Use regular `git merge main` (NOT squash merge, which causes persistent conflicts). galton-stream and galton-monitor are separate Railway services in the same repo with watch paths so they deploy independently. Watch patterns must include both `/*` (root files) and `/**` (subdirectory files).
 
 ## Railway
 
