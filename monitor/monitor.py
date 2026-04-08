@@ -50,7 +50,6 @@ PREFIX = "Galton monitor:"
 fallback_proc = None
 current_state = "STARTING"  # NORMAL, FALLBACK_ACTIVE, RESTARTED_ALL, RESTARTED_RAILWAY, DEAD
 consecutive_failures = 0
-youtube_failures = 0
 chat_poller_dead_count = 0
 title_writer_dead_count = 0
 
@@ -290,12 +289,8 @@ def handle_youtube_broadcast_ended():
 
 
 def on_state_transition(old_state, new_state, reason):
-    """Called on every state transition. Checks YouTube and alerts."""
-    yt_status, _ = check_youtube_status()
-    msg = (
-        f"{PREFIX} State: {old_state} -> {new_state}. "
-        f"Reason: {reason}. YouTube: {yt_status}"
-    )
+    """Called on every state transition."""
+    msg = f"{PREFIX} State: {old_state} -> {new_state}. Reason: {reason}"
     send_telegram(msg)
     log(msg)
 
@@ -470,7 +465,7 @@ def set_state(new_state, reason):
 
 
 def main():
-    global current_state, consecutive_failures, youtube_failures
+    global current_state, consecutive_failures
 
     log(f"Starting monitor, polling {GALTON_STREAM_URL} every {POLL_INTERVAL}s")
     log(f"YouTube OAuth: client_id={'set' if YOUTUBE_CLIENT_ID else 'MISSING'}, "
@@ -524,39 +519,9 @@ def main():
             stop_fallback()
             set_state("NORMAL", "stream recovered")
             consecutive_failures = 0
-            youtube_failures = 0
         else:
             tx = health.get("tx_bytes", 0)
             consecutive_failures = 0
-
-            # Check if YouTube broadcast is still alive
-            yt_status, yt_live = check_youtube_status()
-            if yt_live is False:
-                youtube_failures += 1
-                log(f"YouTube down ({yt_status}), yt_fail #{youtube_failures}")
-                if youtube_failures == 1:
-                    # First detection — try to create a new broadcast
-                    # (the old one may have been ended by YouTube)
-                    if handle_youtube_broadcast_ended():
-                        log("New broadcast created, restarting FFmpeg to connect...")
-                        restart_ffmpeg()
-                elif youtube_failures == 3:
-                    # 360s — FFmpeg restart in case it didn't reconnect
-                    msg = (f"{PREFIX} YouTube still down ({yt_status}). "
-                           f"Restarting FFmpeg to reconnect.")
-                    send_telegram(msg)
-                    restart_ffmpeg()
-                elif youtube_failures == 5:
-                    # 600s — full container restart
-                    msg = (f"{PREFIX} YouTube still down after FFmpeg restart. "
-                           f"Restarting container.")
-                    send_telegram(msg)
-                    restart_galton_stream()
-                    youtube_failures = 0
-            else:
-                if youtube_failures > 0:
-                    log(f"YouTube recovered ({yt_status})")
-                youtube_failures = 0
 
             # Check chat_poller health
             chat_status = health.get("chat_poller_status", "unknown")
@@ -590,7 +555,7 @@ def main():
                     log("Title writer recovered")
                 title_writer_dead_count = 0
 
-            log(f"Healthy: tx_bytes={tx}, uptime={health.get('uptime_seconds', 0)}s, yt={yt_status}, chat={chat_status}, title={title_status}")
+            log(f"Healthy: tx_bytes={tx}, uptime={health.get('uptime_seconds', 0)}s, chat={chat_status}, title={title_status}")
 
 
 if __name__ == "__main__":
