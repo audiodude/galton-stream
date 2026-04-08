@@ -12,6 +12,7 @@ import urllib.parse
 from chat_events import write_events
 
 TOKEN_FILE = os.environ.get("YOUTUBE_TOKEN_FILE", "youtube_token.json")
+LIVE_CHAT_ID = os.environ.get("YOUTUBE_LIVE_CHAT_ID", "")
 POLL_INTERVAL = 5
 
 
@@ -91,23 +92,24 @@ def run():
     access_token = get_access_token(config)
     token_refreshed_at = time.time()
 
-    print("Looking for active broadcast...", flush=True)
-
-    chat_id = None
-    backoff = 30
-    while not chat_id:
-        title, chat_id = find_active_broadcast(access_token)
-        if not chat_id:
-            print(f"No active broadcast found. Retrying in {backoff}s...", flush=True)
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 900)  # max 15 min backoff
-            # Refresh token if it's been a while
-            if time.time() - token_refreshed_at > 3000:
-                access_token = get_access_token(config)
-                token_refreshed_at = time.time()
-
-    print(f"Found broadcast: {title}", flush=True)
-    print(f"Chat ID: {chat_id}", flush=True)
+    if LIVE_CHAT_ID:
+        chat_id = LIVE_CHAT_ID
+        print(f"Using chat ID from env: {chat_id}", flush=True)
+    else:
+        print("Looking for active broadcast...", flush=True)
+        chat_id = None
+        backoff = 30
+        while not chat_id:
+            title, chat_id = find_active_broadcast(access_token)
+            if not chat_id:
+                print(f"No active broadcast found. Retrying in {backoff}s...", flush=True)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 900)  # max 15 min backoff
+                if time.time() - token_refreshed_at > 3000:
+                    access_token = get_access_token(config)
+                    token_refreshed_at = time.time()
+        print(f"Found broadcast: {title}", flush=True)
+        print(f"Chat ID: {chat_id}", flush=True)
 
     page_token = None
     poll_ms = POLL_INTERVAL * 1000
