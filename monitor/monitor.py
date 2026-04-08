@@ -52,6 +52,7 @@ current_state = "STARTING"  # NORMAL, FALLBACK_ACTIVE, RESTARTED_ALL, RESTARTED_
 consecutive_failures = 0
 youtube_failures = 0
 chat_poller_dead_count = 0
+title_writer_dead_count = 0
 
 
 def log(msg):
@@ -391,6 +392,22 @@ def restart_chat_poller():
         return False
 
 
+def restart_title_writer():
+    """POST /restart-title-writer to galton-stream's health server."""
+    try:
+        req = urllib.request.Request(
+            f"{GALTON_STREAM_URL}/restart-title-writer",
+            data=b"",
+            method="POST",
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        log(f"restart-title-writer response: {resp.read().decode()}")
+        return True
+    except Exception as e:
+        log(f"restart-title-writer failed: {e}")
+        return False
+
+
 def restart_galton_stream():
     """POST /restart-all to galton-stream's health server."""
     try:
@@ -557,7 +574,23 @@ def main():
                     log("Chat poller recovered")
                 chat_poller_dead_count = 0
 
-            log(f"Healthy: tx_bytes={tx}, uptime={health.get('uptime_seconds', 0)}s, yt={yt_status}, chat={chat_status}")
+            # Check title_writer health
+            title_status = health.get("title_writer_status", "unknown")
+            if title_status == "dead":
+                title_writer_dead_count += 1
+                if title_writer_dead_count == 1:
+                    log("Title writer is dead, restarting...")
+                    restart_title_writer()
+                    send_telegram(f"{PREFIX} Title writer was dead, restarted.")
+                elif title_writer_dead_count % 5 == 0:
+                    log(f"Title writer still dead after {title_writer_dead_count} checks, retrying...")
+                    restart_title_writer()
+            else:
+                if title_writer_dead_count > 0:
+                    log("Title writer recovered")
+                title_writer_dead_count = 0
+
+            log(f"Healthy: tx_bytes={tx}, uptime={health.get('uptime_seconds', 0)}s, yt={yt_status}, chat={chat_status}, title={title_status}")
 
 
 if __name__ == "__main__":

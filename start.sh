@@ -38,9 +38,14 @@ sleep 2
 xsetroot -solid black
 unclutter -idle 0 -root &
 
-# Start music player (writes current song to /tmp/current_song.txt, audio to pipe)
+# Start music player (decodes audio to pipe, writes playlist state)
 MUSIC_DIR="$MUSIC_DIR" python3 /app/scripts/music_player.py &
 MUSIC_PID=$!
+
+# Start title writer (reads playlist state, writes song title on wall-clock schedule)
+python3 /app/scripts/title_writer.py &
+TITLE_PID=$!
+echo $TITLE_PID > /tmp/title_writer.pid
 
 # Start YouTube chat poller (writes events to /tmp/chat_events.json for Godot)
 python3 /app/scripts/chat_poller.py &
@@ -93,12 +98,12 @@ python3 /app/scripts/health_server.py &
 HEALTH_PID=$!
 
 # If any process dies, kill the others and exit
-trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $CHAT_PID $HEALTH_PID 2>/dev/null; exit" SIGTERM SIGINT
+trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null; exit" SIGTERM SIGINT
 
 while kill -0 $GODOT_PID 2>/dev/null && kill -0 $FFMPEG_PID 2>/dev/null && kill -0 $MUSIC_PID 2>/dev/null; do
     sleep 5
 done
 
 echo "Process exited, shutting down..."
-kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $CHAT_PID $HEALTH_PID 2>/dev/null
+kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null
 exit 1

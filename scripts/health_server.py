@@ -20,6 +20,8 @@ CHECK_INTERVAL = 60
 STALL_THRESHOLD = 3
 CHAT_POLLER_PID_FILE = "/tmp/chat_poller.pid"
 CHAT_POLLER_CMD = ["python3", "/app/scripts/chat_poller.py"]
+TITLE_WRITER_PID_FILE = "/tmp/title_writer.pid"
+TITLE_WRITER_CMD = ["python3", "/app/scripts/title_writer.py"]
 PREFIX = "Galton monitor:"
 
 # Telegram (optional, secondary alerts)
@@ -72,24 +74,23 @@ def get_tx_bytes():
         return 0
 
 
-def get_chat_poller_pid():
-    """Read chat_poller PID from file and verify it's alive."""
+def _get_pid(pid_file):
+    """Read a PID from file and verify the process is alive."""
     try:
-        with open(CHAT_POLLER_PID_FILE) as f:
+        with open(pid_file) as f:
             pid = int(f.read().strip())
-        os.kill(pid, 0)  # check if alive
+        os.kill(pid, 0)
         return pid
     except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
         return None
 
 
-def restart_chat_poller():
-    """Kill existing chat_poller (if any) and spawn a new one. Returns message."""
-    old_pid = get_chat_poller_pid()
+def _restart_process(name, pid_file, cmd):
+    """Kill existing process (if any) and spawn a new one. Returns message."""
+    old_pid = _get_pid(pid_file)
     if old_pid:
         try:
             os.kill(old_pid, signal.SIGTERM)
-            # Wait briefly for clean exit
             for _ in range(10):
                 try:
                     os.kill(old_pid, 0)
@@ -100,10 +101,26 @@ def restart_chat_poller():
             pass
 
     import subprocess as _sp
-    proc = _sp.Popen(CHAT_POLLER_CMD, stdout=None, stderr=None)
-    with open(CHAT_POLLER_PID_FILE, "w") as f:
+    proc = _sp.Popen(cmd, stdout=None, stderr=None)
+    with open(pid_file, "w") as f:
         f.write(str(proc.pid))
-    return f"Restarted chat_poller (old PID {old_pid}, new PID {proc.pid})"
+    return f"Restarted {name} (old PID {old_pid}, new PID {proc.pid})"
+
+
+def get_chat_poller_pid():
+    return _get_pid(CHAT_POLLER_PID_FILE)
+
+
+def get_title_writer_pid():
+    return _get_pid(TITLE_WRITER_PID_FILE)
+
+
+def restart_chat_poller():
+    return _restart_process("chat_poller", CHAT_POLLER_PID_FILE, CHAT_POLLER_CMD)
+
+
+def restart_title_writer():
+    return _restart_process("title_writer", TITLE_WRITER_PID_FILE, TITLE_WRITER_CMD)
 
 
 def find_ffmpeg_pid():
@@ -182,6 +199,7 @@ class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             chat_pid = get_chat_poller_pid()
+            title_pid = get_title_writer_pid()
             with state_lock:
                 payload = {
                     "status": state["status"],
@@ -191,6 +209,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                     "uptime_seconds": int(time.time() - state["uptime_start"]),
                     "chat_poller_pid": chat_pid,
                     "chat_poller_status": "alive" if chat_pid else "dead",
+                    "title_writer_pid": title_pid,
+                    "title_writer_status": "alive" if title_pid else "dead",
                 }
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -220,6 +240,14 @@ class HealthHandler(BaseHTTPRequestHandler):
         elif self.path == "/restart-chat-poller":
             msg = restart_chat_poller()
             send_telegram(f"{PREFIX} Chat poller restart: {msg}")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"message": msg}).encode())
+
+        elif self.path == "/restart-title-writer":
+            msg = restart_title_writer()
+            send_telegram(f"{PREFIX} Title writer restart: {msg}")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()

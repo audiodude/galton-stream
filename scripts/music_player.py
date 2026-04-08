@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Plays MP3s in shuffled order, writes current song to a file,
-and pipes raw audio to a named pipe for FFmpeg."""
+"""Plays MP3s in shuffled order and pipes raw audio to a named pipe for FFmpeg.
+
+Title display is handled by title_writer.py, which reads the playlist state
+file and schedules titles independently using ffprobe durations."""
 
 import glob
 import json
@@ -12,7 +14,6 @@ import time
 
 MUSIC_DIR = os.environ.get("MUSIC_DIR", "/data/mp3")
 AUDIO_PIPE = "/tmp/audio_pipe"
-SONG_FILE = "/tmp/current_song.txt"
 STATE_FILE = os.environ.get("STATE_FILE", "/data/playlist_state.json")
 
 
@@ -49,19 +50,6 @@ def save_state(playlist, index):
     os.replace(tmp, STATE_FILE)
 
 
-def song_title(path):
-    """Convert filename to display title."""
-    name = os.path.splitext(os.path.basename(path))[0]
-    return name.replace("-", " ").replace("_", " ").title()
-
-
-def write_song_name(title):
-    tmp = SONG_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(title)
-    os.replace(tmp, SONG_FILE)
-
-
 def play_loop():
     # Create named pipe
     if os.path.exists(AUDIO_PIPE):
@@ -87,12 +75,8 @@ def play_loop():
         for i in range(start_index, len(playlist)):
             song = playlist[i]
             save_state(playlist, i)
-            title = song_title(song)
-            write_song_name(title)
-            print(f"Now playing: {title} ({i + 1}/{len(playlist)})", flush=True)
+            print(f"Decoding: {os.path.basename(song)} ({i + 1}/{len(playlist)})", flush=True)
 
-            # Decode MP3 to raw PCM, piping stdout through our
-            # persistent pipe fd so it never sees EOF between songs.
             proc = subprocess.Popen([
                 "ffmpeg", "-y",
                 "-re",
@@ -124,7 +108,7 @@ def play_loop():
 
             proc.wait()
             if proc.returncode != 0:
-                print(f"Warning: failed to play {title}", file=sys.stderr, flush=True)
+                print(f"Warning: failed to play {os.path.basename(song)}", file=sys.stderr, flush=True)
 
         # Reshuffle for next loop
         random.shuffle(playlist)
