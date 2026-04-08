@@ -94,11 +94,13 @@ def run():
     print("Looking for active broadcast...", flush=True)
 
     chat_id = None
+    backoff = 30
     while not chat_id:
         title, chat_id = find_active_broadcast(access_token)
         if not chat_id:
-            print("No active broadcast found. Retrying in 30s...", flush=True)
-            time.sleep(30)
+            print(f"No active broadcast found. Retrying in {backoff}s...", flush=True)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 900)  # max 15 min backoff
             # Refresh token if it's been a while
             if time.time() - token_refreshed_at > 3000:
                 access_token = get_access_token(config)
@@ -141,6 +143,10 @@ def run():
             if e.code == 401:
                 access_token = get_access_token(config)
                 token_refreshed_at = time.time()
+            elif e.code == 403 and "quotaExceeded" in body:
+                print("Quota exceeded, backing off 15 min...", file=sys.stderr, flush=True)
+                time.sleep(900)
+                continue
             time.sleep(poll_ms / 1000)
             continue
         except (urllib.error.URLError, OSError) as e:
