@@ -18,6 +18,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 CHECK_INTERVAL = 60
 STALL_THRESHOLD = 3
+CHAT_POLLER_PID_FILE = "/tmp/chat_poller.pid"
+CHAT_POLLER_CMD = ["python3", "/app/scripts/chat_poller.py"]
 PREFIX = "Galton monitor:"
 
 # Telegram (optional, secondary alerts)
@@ -68,6 +70,40 @@ def get_tx_bytes():
         return total
     except Exception:
         return 0
+
+
+def get_chat_poller_pid():
+    """Read chat_poller PID from file and verify it's alive."""
+    try:
+        with open(CHAT_POLLER_PID_FILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)  # check if alive
+        return pid
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+        return None
+
+
+def restart_chat_poller():
+    """Kill existing chat_poller (if any) and spawn a new one. Returns message."""
+    old_pid = get_chat_poller_pid()
+    if old_pid:
+        try:
+            os.kill(old_pid, signal.SIGTERM)
+            # Wait briefly for clean exit
+            for _ in range(10):
+                try:
+                    os.kill(old_pid, 0)
+                    time.sleep(0.5)
+                except ProcessLookupError:
+                    break
+        except ProcessLookupError:
+            pass
+
+    import subprocess as _sp
+    proc = _sp.Popen(CHAT_POLLER_CMD, stdout=None, stderr=None)
+    with open(CHAT_POLLER_PID_FILE, "w") as f:
+        f.write(str(proc.pid))
+    return f"Restarted chat_poller (old PID {old_pid}, new PID {proc.pid})"
 
 
 def find_ffmpeg_pid():
@@ -145,6 +181,7 @@ def watchdog_loop():
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
+            chat_pid = get_chat_poller_pid()
             with state_lock:
                 payload = {
                     "status": state["status"],
@@ -152,6 +189,8 @@ class HealthHandler(BaseHTTPRequestHandler):
                     "ffmpeg_pid": state["ffmpeg_pid"],
                     "stall_count": state["stall_count"],
                     "uptime_seconds": int(time.time() - state["uptime_start"]),
+                    "chat_poller_pid": chat_pid,
+                    "chat_poller_status": "alive" if chat_pid else "dead",
                 }
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -173,6 +212,14 @@ class HealthHandler(BaseHTTPRequestHandler):
             else:
                 msg = "No FFmpeg process found"
             send_telegram(f"{PREFIX} Restart requested: {msg}")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"message": msg}).encode())
+
+        elif self.path == "/restart-chat-poller":
+            msg = restart_chat_poller()
+            send_telegram(f"{PREFIX} Chat poller restart: {msg}")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()

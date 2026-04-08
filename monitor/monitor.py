@@ -51,6 +51,7 @@ fallback_proc = None
 current_state = "STARTING"  # NORMAL, FALLBACK_ACTIVE, RESTARTED_ALL, RESTARTED_RAILWAY, DEAD
 consecutive_failures = 0
 youtube_failures = 0
+chat_poller_dead_count = 0
 
 
 def log(msg):
@@ -374,6 +375,22 @@ def restart_ffmpeg():
         return False
 
 
+def restart_chat_poller():
+    """POST /restart-chat-poller to galton-stream's health server."""
+    try:
+        req = urllib.request.Request(
+            f"{GALTON_STREAM_URL}/restart-chat-poller",
+            data=b"",
+            method="POST",
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        log(f"restart-chat-poller response: {resp.read().decode()}")
+        return True
+    except Exception as e:
+        log(f"restart-chat-poller failed: {e}")
+        return False
+
+
 def restart_galton_stream():
     """POST /restart-all to galton-stream's health server."""
     try:
@@ -524,7 +541,23 @@ def main():
                     log(f"YouTube recovered ({yt_status})")
                 youtube_failures = 0
 
-            log(f"Healthy: tx_bytes={tx}, uptime={health.get('uptime_seconds', 0)}s, yt={yt_status}")
+            # Check chat_poller health
+            chat_status = health.get("chat_poller_status", "unknown")
+            if chat_status == "dead":
+                chat_poller_dead_count += 1
+                if chat_poller_dead_count == 1:
+                    log("Chat poller is dead, restarting...")
+                    restart_chat_poller()
+                    send_telegram(f"{PREFIX} Chat poller was dead, restarted.")
+                elif chat_poller_dead_count % 5 == 0:
+                    log(f"Chat poller still dead after {chat_poller_dead_count} checks, retrying...")
+                    restart_chat_poller()
+            else:
+                if chat_poller_dead_count > 0:
+                    log("Chat poller recovered")
+                chat_poller_dead_count = 0
+
+            log(f"Healthy: tx_bytes={tx}, uptime={health.get('uptime_seconds', 0)}s, yt={yt_status}, chat={chat_status}")
 
 
 if __name__ == "__main__":

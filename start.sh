@@ -42,6 +42,11 @@ unclutter -idle 0 -root &
 MUSIC_DIR="$MUSIC_DIR" python3 /app/scripts/music_player.py &
 MUSIC_PID=$!
 
+# Start YouTube chat poller (writes events to /tmp/chat_events.json for Godot)
+python3 /app/scripts/chat_poller.py &
+CHAT_PID=$!
+echo $CHAT_PID > /tmp/chat_poller.pid
+
 # Wait for pipe to be created
 sleep 2
 
@@ -88,12 +93,12 @@ python3 /app/scripts/health_server.py &
 HEALTH_PID=$!
 
 # If any process dies, kill the others and exit
-trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $HEALTH_PID 2>/dev/null; exit" SIGTERM SIGINT
+trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $CHAT_PID $HEALTH_PID 2>/dev/null; exit" SIGTERM SIGINT
 
 while kill -0 $GODOT_PID 2>/dev/null && kill -0 $FFMPEG_PID 2>/dev/null && kill -0 $MUSIC_PID 2>/dev/null; do
     sleep 5
 done
 
 echo "Process exited, shutting down..."
-kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $HEALTH_PID 2>/dev/null
+kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $CHAT_PID $HEALTH_PID 2>/dev/null
 exit 1
