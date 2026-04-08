@@ -123,7 +123,12 @@ def run():
         try:
             data = api_get(url, access_token)
         except urllib.error.HTTPError as e:
-            print(f"API error: {e.code}", file=sys.stderr, flush=True)
+            body = ""
+            try:
+                body = e.read().decode()
+            except Exception:
+                pass
+            print(f"API error: {e.code} {body}", file=sys.stderr, flush=True)
             if e.code == 401:
                 access_token = get_access_token(config)
                 token_refreshed_at = time.time()
