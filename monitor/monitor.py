@@ -72,6 +72,7 @@ def send_telegram(text):
             data=data,
         )
         urllib.request.urlopen(req, timeout=10)
+        log(f"Telegram: {text}")
     except Exception as e:
         log(f"Telegram send failed: {e}")
     log(f"Telegram: {text}")
