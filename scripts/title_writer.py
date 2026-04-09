@@ -5,6 +5,10 @@ Reads the playlist state file (shared with music_player.py) to know the
 playlist order and current index. Uses ffprobe to get durations, then
 sleeps through each song. Periodically checks the state file to re-sync
 if the index has drifted from what we expect.
+
+Tracks cumulative -re drift: each song, the decoder finishes ~0.2s fast,
+pushing extra audio into FFmpeg's buffer. The title write is delayed by
+the accumulated drift so it matches what the viewer actually hears.
 """
 
 import json
@@ -74,15 +78,21 @@ def run():
         return durations[path]
 
     current_index = index
+    cumulative_drift = 0.0  # how far ahead the audio is vs wall clock
 
     while True:
-        # Write the current song title
+        # Write the current song title, delayed by accumulated drift
         if current_index < len(playlist):
             song = playlist[current_index]
             title = song_title(song)
-            write_song_name(title)
             duration = get_cached_duration(song)
-            print(f"[title] WRITE '{title}' idx={current_index} duration={duration:.1f}s", flush=True)
+
+            if cumulative_drift > 0.5:
+                print(f"[title] DELAY {cumulative_drift:.1f}s before writing '{title}'", flush=True)
+                time.sleep(cumulative_drift)
+
+            write_song_name(title)
+            print(f"[title] WRITE '{title}' idx={current_index} duration={duration:.1f}s drift={cumulative_drift:.1f}s", flush=True)
         else:
             duration = 0
             print(f"[title] index {current_index} past end of playlist ({len(playlist)})", flush=True)
@@ -102,18 +112,22 @@ def run():
                 continue
 
             if playlist_now != playlist:
-                # Playlist was reshuffled
+                # Playlist was reshuffled — reset drift
                 print(f"[title] RESHUFFLE detected at elapsed={elapsed:.1f}s, state index={index_now}", flush=True)
                 playlist = playlist_now
                 durations.clear()
                 current_index = index_now
+                cumulative_drift = 0.0
                 break
 
             if index_now != current_index:
-                # Music player is on a different song than we expect
+                # Music player moved on — measure how early it finished
                 wall = time.monotonic() - song_start
+                song_drift = duration - wall  # positive = decoder finished early
+                cumulative_drift = max(0, cumulative_drift + song_drift)
                 print(f"[title] RESYNC: was idx={current_index}, state has idx={index_now}, "
-                      f"wall={wall:.1f}s, expected={duration:.1f}s", flush=True)
+                      f"wall={wall:.1f}s, expected={duration:.1f}s, "
+                      f"song_drift={song_drift:.2f}s, cumulative={cumulative_drift:.1f}s", flush=True)
                 current_index = index_now
                 break
             else:
@@ -121,8 +135,11 @@ def run():
         else:
             # Song duration elapsed normally, advance to next
             wall = time.monotonic() - song_start
+            song_drift = duration - wall
+            cumulative_drift = max(0, cumulative_drift + song_drift)
             print(f"[title] ADVANCE: idx {current_index} -> {current_index + 1}, "
-                  f"wall={wall:.1f}s, ffprobe={duration:.1f}s, drift={wall - duration:.2f}s", flush=True)
+                  f"wall={wall:.1f}s, ffprobe={duration:.1f}s, "
+                  f"song_drift={song_drift:.2f}s, cumulative={cumulative_drift:.1f}s", flush=True)
             current_index += 1
             if current_index >= len(playlist):
                 # Wait for reshuffle
@@ -134,6 +151,7 @@ def run():
                         playlist = playlist_now
                         current_index = index_now
                         durations.clear()
+                        cumulative_drift = 0.0
                         print(f"New playlist ({len(playlist)} tracks)", flush=True)
                         break
 
