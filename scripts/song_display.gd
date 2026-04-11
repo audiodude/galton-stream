@@ -2,8 +2,9 @@ extends Label
 
 const SONG_FILE := "/tmp/current_song.txt"
 const POLL_INTERVAL := 2.0
-const FLASH_DURATION := 1.5
-const FLASH_INTERVAL := 0.1
+const FLASH_DURATION := 3.5
+const FLASH_INTERVAL_START := 0.08
+const FLASH_INTERVAL_END := 0.5
 
 var poll_timer: float = 0.0
 var fps_timer: float = 0.0
@@ -21,7 +22,7 @@ const ICON_GAP := 6
 
 func _ready():
 	add_theme_font_size_override("font_size", 24)
-	add_theme_color_override("font_color", Color(0.6, 0.65, 0.8, 0.7))
+	add_theme_color_override("font_color", REST_COLOR)
 	autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	max_lines_visible = 2
 
@@ -38,7 +39,7 @@ func _ready():
 	note_icon.texture = tex
 	note_icon.position = Vector2(20, 970 + 2)
 	note_icon.z_index = 20
-	note_icon.modulate = Color(0.6, 0.65, 0.8, 0.7)
+	note_icon.modulate = REST_COLOR
 	get_parent().call_deferred("add_child", note_icon)
 
 func _process(delta):
@@ -59,7 +60,10 @@ func _process(delta):
 			flashing = false
 			_start_fade()
 		elif flash_timer <= 0:
-			flash_timer = FLASH_INTERVAL
+			# Ease-out: fast flashes early, slowing as we approach the fade.
+			var t: float = clamp(flash_elapsed / FLASH_DURATION, 0.0, 1.0)
+			var eased: float = 1.0 - pow(1.0 - t, 2.0)
+			flash_timer = lerp(FLASH_INTERVAL_START, FLASH_INTERVAL_END, eased)
 			flash_index = (flash_index + 1) % flash_colors.size()
 			add_theme_color_override("font_color", flash_colors[flash_index])
 			if note_icon:
@@ -101,14 +105,16 @@ func _show_song(title: String):
 	flashing = true
 	add_theme_color_override("font_color", flash_colors[0])
 
+const REST_COLOR := Color(1.0, 1.0, 1.0, 1.0)
+const COLOR_CROSSFADE := 1.2
+
+func _set_label_color(c: Color):
+	add_theme_color_override("font_color", c)
+	if note_icon:
+		note_icon.modulate = c
+
 func _start_fade():
-	add_theme_color_override("font_color", Color(0.6, 0.65, 0.8, 0.7))
 	modulate.a = 1.0
-	if note_icon:
-		note_icon.modulate = Color(0.6, 0.65, 0.8, 0.7)
-	# Fade to 0.6 opacity over 10s
+	var from_color: Color = flash_colors[flash_index]
 	active_tween = create_tween()
-	active_tween.tween_property(self, "modulate:a", 0.6, 10.0).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
-	if note_icon:
-		var icon_tween = create_tween()
-		icon_tween.tween_property(note_icon, "modulate:a", 0.6, 10.0).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
+	active_tween.tween_method(_set_label_color, from_color, REST_COLOR, COLOR_CROSSFADE)
