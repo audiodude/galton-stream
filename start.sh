@@ -62,35 +62,43 @@ GODOT_PID=$!
 # Wait for Godot to initialize and start rendering
 sleep 5
 
-# Start FFmpeg — video from X11, audio from named pipe
-ffmpeg \
-    -loglevel warning \
-    -stats_period 30 \
-    -thread_queue_size 4096 \
-    -f x11grab \
-    -video_size ${RESOLUTION} \
-    -framerate ${FPS} \
-    -i :99 \
-    -thread_queue_size 512 \
-    -f s16le \
-    -ar 44100 \
-    -ac 2 \
-    -i "$AUDIO_PIPE" \
-    -vf scale=${OUTPUT_RES} \
-    -af volume=-7dB \
-    -c:v libx264 \
-    -preset ultrafast \
-    -tune zerolatency \
-    -b:v 2500k \
-    -maxrate 2500k \
-    -bufsize 7500k \
-    -pix_fmt yuv420p \
-    -g 60 \
-    -c:a aac \
-    -b:a 128k \
-    -ar 44100 \
-    -f flv \
-    "${YOUTUBE_URL}/${YOUTUBE_STREAM_KEY}" &
+# Start FFmpeg in a retry loop — if YouTube's RTMP drops, restart FFmpeg
+# instead of tearing down the whole container. music_player already handles
+# the reader-died case by reopening the pipe.
+(
+    while true; do
+        ffmpeg \
+            -loglevel warning \
+            -stats_period 30 \
+            -thread_queue_size 4096 \
+            -f x11grab \
+            -video_size ${RESOLUTION} \
+            -framerate ${FPS} \
+            -i :99 \
+            -thread_queue_size 512 \
+            -f s16le \
+            -ar 44100 \
+            -ac 2 \
+            -i "$AUDIO_PIPE" \
+            -vf scale=${OUTPUT_RES} \
+            -af volume=-7dB \
+            -c:v libx264 \
+            -preset ultrafast \
+            -tune zerolatency \
+            -b:v 2500k \
+            -maxrate 2500k \
+            -bufsize 7500k \
+            -pix_fmt yuv420p \
+            -g 60 \
+            -c:a aac \
+            -b:a 128k \
+            -ar 44100 \
+            -f flv \
+            "${YOUTUBE_URL}/${YOUTUBE_STREAM_KEY}" || true
+        echo "FFmpeg exited, restarting in 3s..."
+        sleep 3
+    done
+) &
 FFMPEG_PID=$!
 
 # Start health server (replaces watchdog.sh — exposes /health for galton-monitor)
