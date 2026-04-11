@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Plays MP3s in shuffled order and pipes raw audio to a named pipe for FFmpeg.
 
-Title display is handled by title_writer.py, which reads the playlist state
-file and schedules titles independently using ffprobe durations."""
+Title display is handled by title_writer.py, which reacts to the playlist
+state file. FFmpeg muxes audio and video by PTS, so writing the title at
+the same wall time we start decoding keeps them in sync automatically."""
 
 import glob
 import json
@@ -42,33 +43,12 @@ def load_state():
     return None, 0
 
 
-def save_state(playlist, index, audio_buffer_seconds=0.0):
-    """Save current playlist order, index, and audio buffer depth.
-
-    audio_buffer_seconds is how far ahead the decoder is of wall-clock
-    playback — i.e. how many seconds of audio are queued between the
-    decoder and the listener. title_writer uses this to delay each
-    title write until the viewer actually hears the song start.
-    """
+def save_state(playlist, index):
+    """Save current playlist order and index."""
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({
-            "playlist": playlist,
-            "index": index,
-            "audio_buffer_seconds": audio_buffer_seconds,
-        }, f)
+        json.dump({"playlist": playlist, "index": index}, f)
     os.replace(tmp, STATE_FILE)
-
-
-def get_duration(path):
-    try:
-        result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, timeout=10)
-        return float(result.stdout.strip())
-    except (ValueError, AttributeError, subprocess.TimeoutExpired):
-        return 0.0
 
 
 def play_loop():
@@ -92,21 +72,12 @@ def play_loop():
     pipe_fd = os.open(AUDIO_PIPE, os.O_WRONLY)
     print("Audio pipe opened for writing", flush=True)
 
-    # Track how far ahead the decoder is of wall-clock time. Each -re
-    # decoder finishes ~0.2s fast, so this grows across songs. Title
-    # writer reads this value to delay title writes and stay in sync.
-    playlist_start_monotonic = time.monotonic()
-    total_decoded_duration = 0.0
-
     while True:
         for i in range(start_index, len(playlist)):
             song = playlist[i]
-            wall_elapsed = time.monotonic() - playlist_start_monotonic
-            buffer_seconds = max(0.0, total_decoded_duration - wall_elapsed)
-            save_state(playlist, i, buffer_seconds)
+            save_state(playlist, i)
             print(f"[audio] DECODE idx={i} {os.path.basename(song)} "
-                  f"({i + 1}/{len(playlist)}) buffer={buffer_seconds:.2f}s", flush=True)
-            total_decoded_duration += get_duration(song)
+                  f"({i + 1}/{len(playlist)})", flush=True)
 
             proc = subprocess.Popen([
                 "ffmpeg", "-y",
@@ -134,10 +105,7 @@ def play_loop():
                 # Wait for streaming FFmpeg to restart, then reopen pipe
                 time.sleep(10)
                 pipe_fd = os.open(AUDIO_PIPE, os.O_WRONLY)
-                # New streaming FFmpeg means the buffer is fresh.
-                playlist_start_monotonic = time.monotonic()
-                total_decoded_duration = 0.0
-                print("Audio pipe reopened, buffer reset", flush=True)
+                print("Audio pipe reopened", flush=True)
                 continue
 
             proc.wait()

@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
-"""Writes current song title to a file, synced to what the viewer hears.
+"""Writes current song title to a file, driven by music_player's state.
 
-Reads the playlist state file written by music_player.py. The state file
-includes audio_buffer_seconds: how far ahead the decoder is of wall-clock
-playback. When we see a new index, we schedule the title write for
-now + audio_buffer_seconds so it lands when the viewer actually hears the
-song start.
-
-Purely reactive — no prediction, no accumulator.
+FFmpeg muxes audio and video by PTS, so writing the title at the same
+wall-clock moment we start decoding the song keeps the title and audio
+in sync automatically. No buffering math, no schedule — just react to
+music_player's state file.
 """
 
 import json
 import os
 import time
-from collections import deque
 
 STATE_FILE = os.environ.get("STATE_FILE", "/data/playlist_state.json")
 SONG_FILE = "/tmp/current_song.txt"
@@ -36,47 +32,26 @@ def load_state():
     try:
         with open(STATE_FILE) as f:
             state = json.load(f)
-        return (
-            state["playlist"],
-            state["index"],
-            state.get("audio_buffer_seconds", 0.0),
-        )
+        return state["playlist"], state["index"]
     except (FileNotFoundError, KeyError, json.JSONDecodeError):
-        return None, None, 0.0
+        return None, None
 
 
 def run():
     print("Title writer starting, waiting for playlist state...", flush=True)
 
-    last_seen_index = None
-    last_seen_playlist = None
-    pending = deque()  # (target_monotonic, title, index)
+    last_index = None
+    last_playlist = None
 
     while True:
-        playlist, index, buffer_seconds = load_state()
-        now = time.monotonic()
-
+        playlist, index = load_state()
         if playlist is not None and 0 <= index < len(playlist):
-            changed = (
-                last_seen_index is None
-                or index != last_seen_index
-                or playlist != last_seen_playlist
-            )
-            if changed:
+            if index != last_index or playlist != last_playlist:
                 title = song_title(playlist[index])
-                target = now + max(0.0, buffer_seconds)
-                pending.append((target, title, index))
-                print(f"[title] QUEUE idx={index} buffer={buffer_seconds:.2f}s "
-                      f"-> '{title}' in {target - now:.2f}s", flush=True)
-                last_seen_index = index
-                last_seen_playlist = playlist
-
-        while pending and pending[0][0] <= now:
-            target, title, idx = pending.popleft()
-            write_song_name(title)
-            late = now - target
-            print(f"[title] WRITE idx={idx} '{title}' late={late:.2f}s", flush=True)
-
+                write_song_name(title)
+                print(f"[title] WRITE idx={index} '{title}'", flush=True)
+                last_index = index
+                last_playlist = playlist
         time.sleep(POLL_INTERVAL)
 
 
