@@ -51,6 +51,9 @@ def save_state(playlist, index):
     os.replace(tmp, STATE_FILE)
 
 
+BYTES_PER_SECOND = 44100 * 2 * 2  # 44.1kHz, stereo, s16le
+
+
 def play_loop():
     # Create named pipe
     if os.path.exists(AUDIO_PIPE):
@@ -72,11 +75,19 @@ def play_loop():
     pipe_fd = os.open(AUDIO_PIPE, os.O_WRONLY)
     print("Audio pipe opened for writing", flush=True)
 
+    player_start = time.monotonic()
+    total_bytes = 0
+    last_cursor_log = -10.0
+
     while True:
         for i in range(start_index, len(playlist)):
             song = playlist[i]
             save_state(playlist, i)
-            print(f"[audio] DECODE idx={i} {os.path.basename(song)} "
+            song_start_bytes = total_bytes
+            song_start_wall = time.monotonic() - player_start
+            print(f"[audio] DECODE_START idx={i} wall={song_start_wall:.2f} "
+                  f"audio_s={total_bytes / BYTES_PER_SECOND:.2f} "
+                  f"{os.path.basename(song)} "
                   f"({i + 1}/{len(playlist)})", flush=True)
 
             proc = subprocess.Popen([
@@ -96,6 +107,16 @@ def play_loop():
                     if not chunk:
                         break
                     os.write(pipe_fd, chunk)
+                    total_bytes += len(chunk)
+
+                    now = time.monotonic() - player_start
+                    if now - last_cursor_log >= 10.0:
+                        last_cursor_log = now
+                        audio_s = total_bytes / BYTES_PER_SECOND
+                        song_pos = (total_bytes - song_start_bytes) / BYTES_PER_SECOND
+                        print(f"[audio] CURSOR idx={i} wall={now:.2f} "
+                              f"audio_s={audio_s:.2f} song_pos={song_pos:.2f} "
+                              f"decoder_drift={audio_s - now:+.3f}", flush=True)
             except BrokenPipeError:
                 print(f"Broken pipe writing audio — reader likely died, waiting to retry...",
                       file=sys.stderr, flush=True)
@@ -109,6 +130,11 @@ def play_loop():
                 continue
 
             proc.wait()
+            song_end_wall = time.monotonic() - player_start
+            song_bytes = total_bytes - song_start_bytes
+            print(f"[audio] DECODE_END idx={i} wall={song_end_wall:.2f} "
+                  f"song_len={song_bytes / BYTES_PER_SECOND:.2f} "
+                  f"decode_wall={song_end_wall - song_start_wall:.2f}", flush=True)
             if proc.returncode != 0:
                 print(f"Warning: failed to play {os.path.basename(song)}", file=sys.stderr, flush=True)
 

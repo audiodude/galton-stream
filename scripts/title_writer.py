@@ -40,6 +40,7 @@ def load_state():
 def run():
     print("Title writer starting, waiting for playlist state...", flush=True)
 
+    start_mono = time.monotonic()
     last_index = None
     last_playlist = None
 
@@ -49,7 +50,9 @@ def run():
             if index != last_index or playlist != last_playlist:
                 title = song_title(playlist[index])
                 write_song_name(title)
-                print(f"[title] WRITE idx={index} '{title}'", flush=True)
+                wall = time.monotonic() - start_mono
+                print(f"[title] WRITE idx={index} wall={wall:.2f} '{title}'",
+                      flush=True)
                 last_index = index
                 last_playlist = playlist
         time.sleep(POLL_INTERVAL)

@@ -80,6 +80,7 @@ func _read_song():
 
 	if title != current_song and not title.is_empty():
 		current_song = title
+		print("[godot] TITLE_CHANGE t=%.3f '%s'" % [Time.get_unix_time_from_system(), title])
 		_show_song(title)
 
 func _get_round_colors() -> Array[Color]:

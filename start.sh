@@ -1,18 +1,14 @@
 #!/bin/bash
 set -e
 
-YOUTUBE_URL="rtmp://a.rtmp.youtube.com/live2"
+YOUTUBE_URL="${YOUTUBE_URL:-rtmp://a.rtmp.youtube.com/live2}"
 RESOLUTION="1920x1080"
 OUTPUT_RES="1280x720"
 FPS="30"
 MUSIC_DIR="/data/mp3"
 AUDIO_PIPE="/tmp/audio_pipe"
 S3_BUCKET="${S3_MUSIC_BUCKET:?ERROR: S3_MUSIC_BUCKET environment variable not set}"
-
-if [ -z "$YOUTUBE_STREAM_KEY" ]; then
-    echo "ERROR: YOUTUBE_STREAM_KEY environment variable not set"
-    exit 1
-fi
+YOUTUBE_STREAM_KEY="${YOUTUBE_STREAM_KEY:-test}"
 
 # Sync music from S3 if the folder is empty
 mkdir -p "$MUSIC_DIR"
@@ -69,7 +65,7 @@ sleep 5
     while true; do
         ffmpeg \
             -loglevel warning \
-            -stats_period 30 \
+            -stats_period 5 \
             -thread_queue_size 4096 \
             -f x11grab \
             -video_size ${RESOLUTION} \
