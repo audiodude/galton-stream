@@ -104,70 +104,6 @@ def get_access_token():
         return None
 
 
-QUOTA_PROBE_INTERVAL = 600  # 10 minutes
-
-_next_quota_probe = 0.0
-_quota_last_state = None  # None | "ok" | "exhausted" | "error"
-
-
-def probe_youtube_quota():
-    """Cheap 1-unit broadcasts.list call. Returns 'ok', 'exhausted', or 'error'.
-
-    Any 200 response — including 'no active broadcast' — means quota is
-    live; a 403 with reason 'quotaExceeded' means the daily bucket is
-    drained. Everything else is lumped into 'error'.
-    """
-    token = get_access_token()
-    if not token:
-        return "error"
-    url = (
-        "https://www.googleapis.com/youtube/v3/liveBroadcasts"
-        "?part=id&broadcastStatus=active&broadcastType=all"
-    )
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        urllib.request.urlopen(req, timeout=10).read()
-        return "ok"
-    except urllib.error.HTTPError as e:
-        try:
-            body = e.read().decode()
-        except Exception:
-            body = ""
-        if e.code == 403 and "quotaExceeded" in body:
-            return "exhausted"
-        log(f"Quota probe HTTP {e.code}: {body[:200]}")
-        return "error"
-    except Exception as e:
-        log(f"Quota probe network error: {e}")
-        return "error"
-
-
-def maybe_probe_quota():
-    """Run a quota probe on a 10-minute cadence, alerting Telegram only on
-    state transitions between ok/exhausted/error.
-
-    chat_poller retries gRPC RESOURCE_EXHAUSTED silently in a loop and the
-    health server reports it alive, so without this probe quota exhaustion
-    is invisible to the monitor. Cost: 144 units/day out of 10k.
-    """
-    global _next_quota_probe, _quota_last_state
-
-    now = time.time()
-    if now < _next_quota_probe:
-        return
-
-    _next_quota_probe = now + QUOTA_PROBE_INTERVAL
-
-    state = probe_youtube_quota()
-    log(f"[quota probe] {state}")
-
-    if _quota_last_state is not None and state != _quota_last_state:
-        send_telegram(
-            f"{PREFIX} YouTube quota probe: {_quota_last_state} → {state}"
-        )
-    _quota_last_state = state
-
-
 def check_youtube_status():
     """Check YouTube broadcast status via Data API v3. Returns (status_string, is_live)."""
     token = get_access_token()
@@ -540,8 +476,6 @@ def main():
 
     while True:
         time.sleep(POLL_INTERVAL)
-
-        maybe_probe_quota()
 
         # Keep fallback alive if it should be running
         if current_state in ("FALLBACK_ACTIVE", "RESTARTED_ALL", "RESTARTED_RAILWAY", "DEAD"):
