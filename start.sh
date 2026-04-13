@@ -59,7 +59,11 @@ if [ "$NCORES" -ge 4 ]; then
     HALF=$((NCORES / 2))
     GODOT_CPUS="0-$((HALF - 1))"
     FFMPEG_CPUS="$HALF-$((NCORES - 1))"
+    # libx264 warns against >16 threads; cap here even if more cores are pinned.
     FFMPEG_THREADS=$((NCORES - HALF))
+    if [ "$FFMPEG_THREADS" -gt 16 ]; then
+        FFMPEG_THREADS=16
+    fi
     GODOT_TASKSET="taskset -c $GODOT_CPUS"
     FFMPEG_TASKSET="taskset -c $FFMPEG_CPUS"
     echo "CPU pinning: Godot -> $GODOT_CPUS, ffmpeg -> $FFMPEG_CPUS ($FFMPEG_THREADS threads)"
