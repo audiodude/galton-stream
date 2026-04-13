@@ -25,7 +25,12 @@ RUN apt-get update && apt-get install -y \
     awscli \
     curl \
     procps \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# chat_poller uses gRPC streaming for YouTube live chat (the REST polling
+# endpoint burns the 10k/day API quota in a few hours).
+RUN pip3 install --no-cache-dir grpcio==1.62.2 protobuf==4.25.3
 
 # Install Godot 4.4
 RUN ARCH=$(dpkg --print-architecture) && \
