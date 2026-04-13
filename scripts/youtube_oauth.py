@@ -5,17 +5,23 @@ Usage:
   1. Go to https://console.cloud.google.com/apis/credentials
   2. Create an OAuth 2.0 Client ID (type: Web application)
      - Add http://localhost:8085 as an authorized redirect URI
-  3. Run: python3 scripts/youtube_oauth.py CLIENT_ID CLIENT_SECRET
-  4. Open the URL it prints, authorize — the token is captured automatically
-  5. Save the refresh token as YOUTUBE_REFRESH_TOKEN env var
+  3. Download the JSON credentials as youtube_client_secret.json in
+     the repo root (it's gitignored).
+  4. Run: python3 scripts/youtube_oauth.py
+     (or pass an explicit path: python3 scripts/youtube_oauth.py path/to.json)
+  5. Open the URL it prints, authorize — the token is captured automatically
+  6. Save the refresh token as YOUTUBE_REFRESH_TOKEN env var on Railway
 """
 
 import json
+import os
 import sys
 import urllib.parse
 import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+
+DEFAULT_SECRET_FILE = "youtube_client_secret.json"
 
 SCOPES = "https://www.googleapis.com/auth/youtube.force-ssl"
 REDIRECT_URI = "http://localhost:8085"
@@ -49,13 +55,39 @@ class OAuthHandler(BaseHTTPRequestHandler):
         pass
 
 
+def load_client_secret(path):
+    """Read the standard Google Cloud client_secret.json file.
+
+    The downloaded file wraps credentials under an "installed" or "web"
+    key depending on client type — accept either.
+    """
+    with open(path) as f:
+        data = json.load(f)
+    for key in ("installed", "web"):
+        if key in data:
+            creds = data[key]
+            return creds["client_id"], creds["client_secret"]
+    raise ValueError(
+        f"{path} is not a valid Google Cloud client secret file "
+        f"(missing 'installed' or 'web' key)"
+    )
+
+
 def main():
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} CLIENT_ID CLIENT_SECRET")
+    path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SECRET_FILE
+    if not os.path.exists(path):
+        print(f"ERROR: {path} not found.")
+        print(f"Download your OAuth client credentials JSON from "
+              f"https://console.cloud.google.com/apis/credentials")
+        print(f"and save it as {DEFAULT_SECRET_FILE} in the repo root.")
         sys.exit(1)
 
-    client_id = sys.argv[1]
-    client_secret = sys.argv[2]
+    try:
+        client_id, client_secret = load_client_secret(path)
+    except (KeyError, ValueError, json.JSONDecodeError) as e:
+        print(f"ERROR reading {path}: {e}")
+        sys.exit(1)
+    print(f"Loaded OAuth client from {path}")
 
     # Start local server to catch redirect
     server = HTTPServer(("127.0.0.1", 8085), OAuthHandler)
