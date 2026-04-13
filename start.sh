@@ -51,8 +51,27 @@ echo $CHAT_PID > /tmp/chat_poller.pid
 # Wait for pipe to be created
 sleep 2
 
+# CPU pinning: split cores between Godot (physics/render) and ffmpeg (encode)
+# so the encoder can't be starved by a Godot spike. Falls back to no pinning
+# if fewer than 4 cores are visible.
+NCORES=$(nproc)
+if [ "$NCORES" -ge 4 ]; then
+    HALF=$((NCORES / 2))
+    GODOT_CPUS="0-$((HALF - 1))"
+    FFMPEG_CPUS="$HALF-$((NCORES - 1))"
+    FFMPEG_THREADS=$((NCORES - HALF))
+    GODOT_TASKSET="taskset -c $GODOT_CPUS"
+    FFMPEG_TASKSET="taskset -c $FFMPEG_CPUS"
+    echo "CPU pinning: Godot -> $GODOT_CPUS, ffmpeg -> $FFMPEG_CPUS ($FFMPEG_THREADS threads)"
+else
+    GODOT_TASKSET=""
+    FFMPEG_TASKSET=""
+    FFMPEG_THREADS=0  # libx264 auto
+    echo "CPU pinning: skipped (only $NCORES cores visible)"
+fi
+
 # Start Godot
-godot --path /app --main-scene main.tscn --rendering-driver opengl3 &
+$GODOT_TASKSET godot --path /app --main-scene main.tscn --rendering-driver opengl3 &
 GODOT_PID=$!
 
 # Wait for Godot to initialize and start rendering
@@ -63,10 +82,10 @@ sleep 5
 # the reader-died case by reopening the pipe.
 (
     while true; do
-        ffmpeg \
+        $FFMPEG_TASKSET ffmpeg \
             -loglevel warning \
             -stats_period 5 \
-            -thread_queue_size 4096 \
+            -thread_queue_size 256 \
             -f x11grab \
             -video_size ${RESOLUTION} \
             -framerate ${FPS} \
@@ -82,6 +101,7 @@ sleep 5
             -c:v libx264 \
             -preset ultrafast \
             -tune zerolatency \
+            -threads ${FFMPEG_THREADS} \
             -b:v 2500k \
             -maxrate 2500k \
             -bufsize 7500k \

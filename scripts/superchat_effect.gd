@@ -163,12 +163,18 @@ func _spawn_ball():
 	main.total_dropped += 1
 	main.round_dropped += 1
 
-	# Connect to bin areas to stop glow on landing
+	# Connect to bin areas to stop glow on landing. Disconnect when the ball
+	# is freed so closures don't pile up on the bin areas over time.
 	for area in bin_areas:
+		var area_ref = area
 		var ball_ref = ball
-		area.body_entered.connect(func(body):
+		var cb := func(body):
 			if body == ball_ref:
 				ball_ref.stop_glow()
+		area_ref.body_entered.connect(cb)
+		ball.tree_exiting.connect(func():
+			if is_instance_valid(area_ref) and area_ref.body_entered.is_connected(cb):
+				area_ref.body_entered.disconnect(cb)
 		)
 
 func _cleanup():

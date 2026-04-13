@@ -37,6 +37,7 @@ GRPC_TARGET = "dns:///youtube.googleapis.com:443"
 TOKEN_REFRESH_INTERVAL = 2700  # 45 minutes
 
 WELCOME_BACK_THRESHOLD = 12 * 3600  # 12 hours
+SEEN_USERS_MAX = 50_000  # cap to avoid unbounded growth over long streams
 
 # LiveChatMessageSnippet.TypeWrapper.Type enum values (from stream_list.proto)
 TYPE_TEXT_MESSAGE = 1
@@ -157,6 +158,11 @@ def _item_to_events(item, seen_users, first_pass):
             events.append({"type": "welcome_back", "name": name, "time": now})
     if channel_id:
         seen_users[channel_id] = now
+        if len(seen_users) > SEEN_USERS_MAX:
+            # Evict oldest 10% to amortize the cost.
+            cutoff = sorted(seen_users.values())[len(seen_users) // 10]
+            for cid in [c for c, t in seen_users.items() if t < cutoff]:
+                del seen_users[cid]
 
     if msg_type == TYPE_SUPER_CHAT:
         events.append({
