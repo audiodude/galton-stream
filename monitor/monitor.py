@@ -104,6 +104,82 @@ def get_access_token():
         return None
 
 
+QUOTA_PROBE_INTERVAL = 600  # 10 minutes
+QUOTA_PROBE_MAX_COUNT = 36  # 6 hours of probing, then stop
+
+_next_quota_probe = 0.0
+_quota_probe_count = 0
+_quota_last_state = None  # None | "ok" | "exhausted" | "error"
+
+
+def probe_youtube_quota():
+    """Cheap 1-unit broadcasts.list call. Returns 'ok', 'exhausted', or 'error'.
+
+    Any 200 response — including 'no active broadcast' — means quota is
+    live; a 403 with reason 'quotaExceeded' means the daily bucket is
+    drained. Everything else is lumped into 'error'.
+    """
+    token = get_access_token()
+    if not token:
+        return "error"
+    url = (
+        "https://www.googleapis.com/youtube/v3/liveBroadcasts"
+        "?part=id&broadcastStatus=active&broadcastType=all"
+    )
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        urllib.request.urlopen(req, timeout=10).read()
+        return "ok"
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode()
+        except Exception:
+            body = ""
+        if e.code == 403 and "quotaExceeded" in body:
+            return "exhausted"
+        log(f"Quota probe HTTP {e.code}: {body[:200]}")
+        return "error"
+    except Exception as e:
+        log(f"Quota probe network error: {e}")
+        return "error"
+
+
+def maybe_probe_quota():
+    """Run a quota probe on a 10-minute cadence, reporting state changes
+    to Telegram for the first 6 hours of monitor uptime.
+
+    Added while debugging the chat_poller gRPC streamList rewrite — the
+    initial deploy landed on an already-exhausted quota bucket, so we
+    needed a passive notifier for when quota resets at midnight Pacific.
+    """
+    global _next_quota_probe, _quota_probe_count, _quota_last_state
+
+    now = time.time()
+    if now < _next_quota_probe:
+        return
+    if _quota_probe_count >= QUOTA_PROBE_MAX_COUNT:
+        return
+
+    _next_quota_probe = now + QUOTA_PROBE_INTERVAL
+    _quota_probe_count += 1
+
+    state = probe_youtube_quota()
+    log(f"[quota probe {_quota_probe_count}/{QUOTA_PROBE_MAX_COUNT}] {state}")
+
+    first = _quota_last_state is None
+    changed = _quota_last_state is not None and state != _quota_last_state
+    if first or changed:
+        arrow = "→ " + state if changed else state
+        send_telegram(f"{PREFIX} YouTube quota probe: {arrow}")
+    _quota_last_state = state
+
+    if _quota_probe_count >= QUOTA_PROBE_MAX_COUNT:
+        send_telegram(
+            f"{PREFIX} Quota probe: reached max count "
+            f"({QUOTA_PROBE_MAX_COUNT} probes). Final state: {state}."
+        )
+
+
 def check_youtube_status():
     """Check YouTube broadcast status via Data API v3. Returns (status_string, is_live)."""
     token = get_access_token()
@@ -476,6 +552,8 @@ def main():
 
     while True:
         time.sleep(POLL_INTERVAL)
+
+        maybe_probe_quota()
 
         # Keep fallback alive if it should be running
         if current_state in ("FALLBACK_ACTIVE", "RESTARTED_ALL", "RESTARTED_RAILWAY", "DEAD"):
