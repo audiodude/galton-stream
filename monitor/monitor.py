@@ -105,10 +105,8 @@ def get_access_token():
 
 
 QUOTA_PROBE_INTERVAL = 600  # 10 minutes
-QUOTA_PROBE_MAX_COUNT = 36  # 6 hours of probing, then stop
 
 _next_quota_probe = 0.0
-_quota_probe_count = 0
 _quota_last_state = None  # None | "ok" | "exhausted" | "error"
 
 
@@ -145,39 +143,29 @@ def probe_youtube_quota():
 
 
 def maybe_probe_quota():
-    """Run a quota probe on a 10-minute cadence, reporting state changes
-    to Telegram for the first 6 hours of monitor uptime.
+    """Run a quota probe on a 10-minute cadence, alerting Telegram only on
+    state transitions between ok/exhausted/error.
 
-    Added while debugging the chat_poller gRPC streamList rewrite — the
-    initial deploy landed on an already-exhausted quota bucket, so we
-    needed a passive notifier for when quota resets at midnight Pacific.
+    chat_poller retries gRPC RESOURCE_EXHAUSTED silently in a loop and the
+    health server reports it alive, so without this probe quota exhaustion
+    is invisible to the monitor. Cost: 144 units/day out of 10k.
     """
-    global _next_quota_probe, _quota_probe_count, _quota_last_state
+    global _next_quota_probe, _quota_last_state
 
     now = time.time()
     if now < _next_quota_probe:
         return
-    if _quota_probe_count >= QUOTA_PROBE_MAX_COUNT:
-        return
 
     _next_quota_probe = now + QUOTA_PROBE_INTERVAL
-    _quota_probe_count += 1
 
     state = probe_youtube_quota()
-    log(f"[quota probe {_quota_probe_count}/{QUOTA_PROBE_MAX_COUNT}] {state}")
+    log(f"[quota probe] {state}")
 
-    first = _quota_last_state is None
-    changed = _quota_last_state is not None and state != _quota_last_state
-    if first or changed:
-        arrow = "→ " + state if changed else state
-        send_telegram(f"{PREFIX} YouTube quota probe: {arrow}")
-    _quota_last_state = state
-
-    if _quota_probe_count >= QUOTA_PROBE_MAX_COUNT:
+    if _quota_last_state is not None and state != _quota_last_state:
         send_telegram(
-            f"{PREFIX} Quota probe: reached max count "
-            f"({QUOTA_PROBE_MAX_COUNT} probes). Final state: {state}."
+            f"{PREFIX} YouTube quota probe: {_quota_last_state} → {state}"
         )
+    _quota_last_state = state
 
 
 def check_youtube_status():
