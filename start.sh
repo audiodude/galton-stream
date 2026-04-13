@@ -71,7 +71,8 @@ sleep 5
             -video_size ${RESOLUTION} \
             -framerate ${FPS} \
             -i :99 \
-            -thread_queue_size 512 \
+            -thread_queue_size 8 \
+            -re \
             -f s16le \
             -ar 44100 \
             -ac 2 \
