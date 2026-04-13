@@ -6,17 +6,21 @@ persistent decoder process. Per-song subprocess startup was costing ~0.2s
 of wall time at each boundary, which accumulated into multi-second audio/video
 drift over a playlist cycle (see drift investigation notes).
 
-Song boundaries are detected from the cumulative PCM byte count using
-precomputed song durations from ffprobe. State is still written to the
-playlist state file so title_writer.py can react to track changes."""
+Song transitions are detected by parsing the decoder's stderr for
+"Opening 'X' for reading" messages, which fire exactly when libavformat
+advances to the next input file. Byte-counting against ffprobe durations
+was inaccurate enough (mp3 encoder delay/padding vs. predicted PCM length)
+to accumulate ~11s of title lag across ~100 songs."""
 
-import bisect
 import glob
 import json
 import os
+import queue
 import random
+import re
 import subprocess
 import sys
+import threading
 import time
 
 MUSIC_DIR = os.environ.get("MUSIC_DIR", "/data/mp3")
@@ -26,6 +30,8 @@ CONCAT_LIST = "/tmp/concat_list.txt"
 
 BYTES_PER_SECOND = 44100 * 2 * 2  # 44.1kHz, stereo, s16le
 
+OPENING_RE = re.compile(r"Opening '([^']+)' for reading")
+
 
 def get_songs():
     songs = sorted(glob.glob(os.path.join(MUSIC_DIR, "*.mp3")))
@@ -33,33 +39,6 @@ def get_songs():
         print("ERROR: No MP3 files found in", MUSIC_DIR, file=sys.stderr)
         sys.exit(1)
     return songs
-
-
-def probe_duration(path):
-    out = subprocess.check_output([
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        path,
-    ], text=True).strip()
-    return float(out)
-
-
-def probe_playlist(playlist):
-    """Return list of per-song byte lengths aligned to playlist order."""
-    print(f"Probing {len(playlist)} tracks for duration...", flush=True)
-    t0 = time.monotonic()
-    bytelens = []
-    for p in playlist:
-        try:
-            dur = probe_duration(p)
-        except Exception as e:
-            print(f"  probe failed for {os.path.basename(p)}: {e}",
-                  file=sys.stderr, flush=True)
-            dur = 0.0
-        bytelens.append(int(round(dur * BYTES_PER_SECOND)))
-    print(f"Probe complete in {time.monotonic() - t0:.1f}s", flush=True)
-    return bytelens
 
 
 def write_concat_list(playlist):
@@ -97,9 +76,12 @@ def spawn_decoder():
     # so it drains the pipe at exactly 44.1kHz stereo = 176400 B/s. Upstream
     # blocks on a full 64KB pipe, yielding tight real-time pacing with no
     # per-file timing artifacts.
+    # -loglevel verbose so libavformat emits "Opening 'X' for reading" on
+    # each input switch; a background thread parses these to drive title
+    # transitions.
     return subprocess.Popen([
         "ffmpeg", "-y",
-        "-loglevel", "warning",
+        "-loglevel", "verbose",
         "-f", "concat", "-safe", "0",
         "-i", CONCAT_LIST,
         "-f", "s16le",
@@ -107,7 +89,22 @@ def spawn_decoder():
         "-ar", "44100",
         "-ac", "2",
         "pipe:1",
-    ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def stderr_reader(proc, playlist_set, transitions):
+    """Parse decoder stderr, push matching file paths to the transition queue."""
+    for raw in proc.stderr:
+        try:
+            line = raw.decode("utf-8", errors="replace")
+        except Exception:
+            continue
+        m = OPENING_RE.search(line)
+        if not m:
+            continue
+        path = m.group(1)
+        if path in playlist_set:
+            transitions.put(path)
 
 
 def play_loop():
@@ -133,40 +130,28 @@ def play_loop():
     last_cursor_log = -10.0
 
     while True:
-        bytelens = probe_playlist(playlist)
-        # Cumulative byte offsets: boundaries[i] = first byte of song i.
-        # boundaries[len] = total playlist size.
-        boundaries = [0]
-        for b in bytelens:
-            boundaries.append(boundaries[-1] + b)
-        total_playlist_bytes = boundaries[-1]
-
-        write_concat_list(playlist)
-
         # Concat demuxer always reads from the top; there's no seek into the
-        # middle of a concat stream without probing offsets into individual
-        # files. Simpler to just re-start the cycle from start_index by
-        # building a rotated playlist.
+        # middle of a concat stream. Rotate the playlist so start_index is 0.
         if start_index != 0:
             playlist = playlist[start_index:] + playlist[:start_index]
-            bytelens = bytelens[start_index:] + bytelens[:start_index]
-            boundaries = [0]
-            for b in bytelens:
-                boundaries.append(boundaries[-1] + b)
-            write_concat_list(playlist)
             start_index = 0
 
+        write_concat_list(playlist)
+        playlist_set = set(playlist)
         save_state(playlist, 0)
-        current_idx = 0
-        print(f"[audio] DECODE_START idx=0 wall={time.monotonic() - player_start:.2f} "
-              f"audio_s=0.00 {os.path.basename(playlist[0])} "
-              f"(1/{len(playlist)})", flush=True)
+        current_idx = -1  # sentinel — first stderr transition fires DECODE_START
 
         proc = spawn_decoder()
-        cycle_start_bytes_wall = time.monotonic() - player_start
-        cycle_start_total_written = 0
-        total_bytes = 0  # bytes written in current cycle
-        song_start_bytes = 0
+        transitions: queue.Queue = queue.Queue()
+        stderr_thread = threading.Thread(
+            target=stderr_reader,
+            args=(proc, playlist_set, transitions),
+            daemon=True,
+        )
+        stderr_thread.start()
+
+        cycle_start_wall = time.monotonic() - player_start
+        total_bytes = 0
 
         try:
             while True:
@@ -176,30 +161,33 @@ def play_loop():
                 os.write(pipe_fd, chunk)
                 total_bytes += len(chunk)
 
-                # Detect song boundary transitions.
-                new_idx = bisect.bisect_right(boundaries, total_bytes) - 1
-                if new_idx >= len(playlist):
-                    new_idx = len(playlist) - 1
-                if new_idx != current_idx:
-                    current_idx = new_idx
-                    song_start_bytes = boundaries[current_idx]
-                    save_state(playlist, current_idx)
-                    wall = time.monotonic() - player_start
-                    print(f"[audio] DECODE_START idx={current_idx} wall={wall:.2f} "
-                          f"audio_s={total_bytes / BYTES_PER_SECOND:.2f} "
-                          f"{os.path.basename(playlist[current_idx])} "
-                          f"({current_idx + 1}/{len(playlist)})", flush=True)
+                # Drain any pending transitions emitted by the stderr reader.
+                while True:
+                    try:
+                        path = transitions.get_nowait()
+                    except queue.Empty:
+                        break
+                    try:
+                        new_idx = playlist.index(path)
+                    except ValueError:
+                        continue
+                    if new_idx != current_idx:
+                        current_idx = new_idx
+                        save_state(playlist, current_idx)
+                        wall = time.monotonic() - player_start
+                        print(f"[audio] DECODE_START idx={current_idx} wall={wall:.2f} "
+                              f"audio_s={total_bytes / BYTES_PER_SECOND:.2f} "
+                              f"{os.path.basename(playlist[current_idx])} "
+                              f"({current_idx + 1}/{len(playlist)})", flush=True)
 
                 now = time.monotonic() - player_start
                 if now - last_cursor_log >= 10.0:
                     last_cursor_log = now
                     audio_s = total_bytes / BYTES_PER_SECOND
-                    song_pos = (total_bytes - song_start_bytes) / BYTES_PER_SECOND
-                    # Drift relative to cycle start
-                    cycle_wall = now - cycle_start_bytes_wall
+                    cycle_wall = now - cycle_start_wall
                     cycle_drift = audio_s - cycle_wall
                     print(f"[audio] CURSOR idx={current_idx} wall={now:.2f} "
-                          f"audio_s={audio_s:.2f} song_pos={song_pos:.2f} "
+                          f"audio_s={audio_s:.2f} "
                           f"cycle_drift={cycle_drift:+.3f}", flush=True)
         except BrokenPipeError:
             print("Broken pipe writing audio — reader likely died, waiting to retry...",
@@ -215,8 +203,7 @@ def play_loop():
         proc.wait()
         end_wall = time.monotonic() - player_start
         print(f"[audio] CYCLE_END wall={end_wall:.2f} "
-              f"total_audio_s={total_bytes / BYTES_PER_SECOND:.2f} "
-              f"expected={total_playlist_bytes / BYTES_PER_SECOND:.2f}", flush=True)
+              f"total_audio_s={total_bytes / BYTES_PER_SECOND:.2f}", flush=True)
         if proc.returncode != 0:
             print(f"Warning: decoder exited with {proc.returncode}",
                   file=sys.stderr, flush=True)
