@@ -39,7 +39,11 @@ def load_token_config():
 
 
 def get_access_token(config):
-    """Use refresh token to get a fresh access token."""
+    """Use refresh token to get a fresh access token.
+
+    Raises urllib.error.HTTPError on failure; callers should log the
+    body via _format_http_error and decide whether to retry or give up.
+    """
     data = urllib.parse.urlencode({
         "client_id": config["client_id"],
         "client_secret": config["client_secret"],
@@ -51,6 +55,39 @@ def get_access_token(config):
     with urllib.request.urlopen(req) as resp:
         tokens = json.loads(resp.read())
     return tokens["access_token"]
+
+
+def _format_http_error(e):
+    try:
+        body = e.read().decode()
+    except Exception:
+        body = ""
+    return f"HTTP {e.code}: {body}"
+
+
+def get_access_token_retrying(config):
+    """Token refresh with exponential backoff — never crashes the process.
+
+    If the refresh token is revoked/expired, Google returns 400 with
+    invalid_grant. Crashing the whole poller for that takes out chat
+    effects entirely until someone notices; instead we log loudly and
+    keep retrying so a re-auth outside the container can recover without
+    a restart.
+    """
+    backoff = 30
+    while True:
+        try:
+            return get_access_token(config)
+        except urllib.error.HTTPError as e:
+            print(f"Token refresh failed: {_format_http_error(e)}",
+                  file=sys.stderr, flush=True)
+        except (urllib.error.URLError, OSError) as e:
+            print(f"Token refresh network error: {e}",
+                  file=sys.stderr, flush=True)
+        print(f"Retrying token refresh in {backoff}s...",
+              file=sys.stderr, flush=True)
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 900)
 
 
 def api_get(url, access_token):
@@ -89,7 +126,7 @@ def find_active_broadcast(access_token):
 
 def run():
     config = load_token_config()
-    access_token = get_access_token(config)
+    access_token = get_access_token_retrying(config)
     token_refreshed_at = time.time()
 
     if LIVE_CHAT_ID:
@@ -121,10 +158,11 @@ def run():
         # Refresh access token every 45 minutes
         if time.time() - token_refreshed_at > 2700:
             try:
-                access_token = get_access_token(config)
+                access_token = get_access_token_retrying(config)
                 token_refreshed_at = time.time()
             except Exception as e:
-                print(f"Token refresh failed: {e}", file=sys.stderr, flush=True)
+                print(f"Token refresh failed unexpectedly: {e}",
+                      file=sys.stderr, flush=True)
 
         url = (
             f"https://www.googleapis.com/youtube/v3/liveChat/messages"
@@ -143,7 +181,7 @@ def run():
                 pass
             print(f"API error: {e.code} {body}", file=sys.stderr, flush=True)
             if e.code == 401:
-                access_token = get_access_token(config)
+                access_token = get_access_token_retrying(config)
                 token_refreshed_at = time.time()
             elif e.code == 403 and "quotaExceeded" in body:
                 print("Quota exceeded, backing off 15 min...", file=sys.stderr, flush=True)
