@@ -10,7 +10,22 @@ AUDIO_PIPE="/tmp/audio_pipe"
 S3_BUCKET="${S3_MUSIC_BUCKET:?ERROR: S3_MUSIC_BUCKET environment variable not set}"
 YOUTUBE_STREAM_KEY="${YOUTUBE_STREAM_KEY:-test}"
 
-# Sync music from S3 if the folder is empty
+# Active window — galton-stream only runs the Godot/ffmpeg/chat/music
+# stack between these hours in America/Los_Angeles. Outside the window
+# start.sh sleeps; galton-monitor (which carries the same schedule)
+# streams the fallback card so the YouTube broadcast stays continuously
+# live.
+ACTIVE_START_HOUR=11
+ACTIVE_END_HOUR=22
+
+in_active_window() {
+    local h
+    h=$(TZ=America/Los_Angeles date +%-H)
+    [ "$h" -ge "$ACTIVE_START_HOUR" ] && [ "$h" -lt "$ACTIVE_END_HOUR" ]
+}
+
+# Sync music from S3 if the folder is empty (do this even outside the
+# window so we're ready the moment it opens).
 mkdir -p "$MUSIC_DIR"
 if [ -z "$(ls -A $MUSIC_DIR/*.mp3 2>/dev/null)" ]; then
     echo "Syncing music from S3..."
@@ -19,6 +34,14 @@ if [ -z "$(ls -A $MUSIC_DIR/*.mp3 2>/dev/null)" ]; then
 else
     echo "Music already present: $(ls $MUSIC_DIR/*.mp3 | wc -l) tracks"
 fi
+
+# Wait until we're inside the active window.
+while ! in_active_window; do
+    now=$(TZ=America/Los_Angeles date '+%H:%M %Z')
+    echo "Outside active window (${ACTIVE_START_HOUR}:00-${ACTIVE_END_HOUR}:00 PT), now $now; sleeping 60s..."
+    sleep 60
+done
+echo "Inside active window, starting stream components..."
 
 # Clean up stale X lock from previous crash
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
@@ -130,9 +153,13 @@ HEALTH_PID=$!
 trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null; exit" SIGTERM SIGINT
 
 while kill -0 $GODOT_PID 2>/dev/null && kill -0 $FFMPEG_PID 2>/dev/null && kill -0 $MUSIC_PID 2>/dev/null; do
+    if ! in_active_window; then
+        echo "Active window closed, tearing down stream components..."
+        break
+    fi
     sleep 5
 done
 
-echo "Process exited, shutting down..."
+echo "Shutting down..."
 kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null
 exit 1

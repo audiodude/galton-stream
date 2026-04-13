@@ -11,6 +11,7 @@ Recovery escalation:
 Checks YouTube broadcast status via OAuth on every poll and state transition.
 """
 
+import datetime
 import json
 import os
 import subprocess
@@ -18,6 +19,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from zoneinfo import ZoneInfo
 
 # Configuration
 GALTON_STREAM_URL = os.environ.get(
@@ -45,6 +47,19 @@ _access_token = None
 _token_expires = 0
 
 PREFIX = "Galton monitor:"
+
+# Active window — galton-stream only runs the Godot/ffmpeg/chat/music
+# stack in this window. Outside it, the monitor streams the fallback
+# card without escalating failures. Must match ACTIVE_*_HOUR in
+# galton-stream's start.sh.
+ACTIVE_TZ = ZoneInfo("America/Los_Angeles")
+ACTIVE_START_HOUR = 11
+ACTIVE_END_HOUR = 22
+
+
+def in_active_window():
+    now = datetime.datetime.now(ACTIVE_TZ)
+    return ACTIVE_START_HOUR <= now.hour < ACTIVE_END_HOUR
 
 # State
 fallback_proc = None
@@ -476,6 +491,29 @@ def main():
 
     while True:
         time.sleep(POLL_INTERVAL)
+
+        # Outside the active window galton-stream intentionally sleeps;
+        # we run the fallback card and suppress all escalation.
+        if not in_active_window():
+            if current_state != "SCHEDULED_OFF":
+                set_state(
+                    "SCHEDULED_OFF",
+                    f"outside active window ({ACTIVE_START_HOUR:02d}:00-"
+                    f"{ACTIVE_END_HOUR:02d}:00 {ACTIVE_TZ.key})",
+                )
+                consecutive_failures = 0
+                chat_poller_dead_count = 0
+                title_writer_dead_count = 0
+            if fallback_proc is None or fallback_proc.poll() is not None:
+                start_fallback()
+            continue
+
+        # Entering the active window from SCHEDULED_OFF: keep fallback
+        # running while galton-stream spins up; the NORMAL-recovery branch
+        # below will stop it once health comes back green.
+        if current_state == "SCHEDULED_OFF":
+            set_state("FALLBACK_ACTIVE", "entering active window")
+            consecutive_failures = 0
 
         # Keep fallback alive if it should be running
         if current_state in ("FALLBACK_ACTIVE", "RESTARTED_ALL", "RESTARTED_RAILWAY", "DEAD"):
