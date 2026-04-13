@@ -15,13 +15,17 @@ Usage:
 
 import json
 import os
+import subprocess
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
 DEFAULT_SECRET_FILE = "youtube_client_secret.json"
+RAILWAY_GRAPHQL = "https://backboard.railway.com/graphql/v2"
+RAILWAY_CONFIG = os.path.expanduser("~/.railway/config.json")
 
 SCOPES = "https://www.googleapis.com/auth/youtube.force-ssl"
 REDIRECT_URI = "http://localhost:8085"
@@ -141,8 +145,118 @@ def main():
 
     print(f"\nSuccess! Your refresh token:\n")
     print(refresh_token)
-    print(f"\nSave this as YOUTUBE_REFRESH_TOKEN on galton-monitor.")
-    print(f"Also save YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET.")
+    print()
+
+    _offer_railway_update(refresh_token)
+
+
+def _detect_railway_project():
+    """Return (project_name, project_id, env_id, [(service_id, service_name)])
+    for the currently linked Railway project, or None."""
+    try:
+        out = subprocess.check_output(
+            ["railway", "status", "--json"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+
+    project_id = data.get("id")
+    project_name = data.get("name")
+    if not project_id or not project_name:
+        return None
+
+    # Prefer the "production" environment, else the first one.
+    envs = [e["node"] for e in data.get("environments", {}).get("edges", [])]
+    prod = next((e for e in envs if e.get("name") == "production"), None)
+    env = prod or (envs[0] if envs else None)
+    if not env:
+        return None
+
+    services = [
+        (si["node"]["serviceId"], si["node"]["serviceName"])
+        for si in env.get("serviceInstances", {}).get("edges", [])
+    ]
+    if not services:
+        return None
+    return project_name, project_id, env["id"], services
+
+
+def _railway_token():
+    """Read the Railway access token from the CLI's config file."""
+    try:
+        with open(RAILWAY_CONFIG) as f:
+            return json.load(f)["user"]["accessToken"]
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def _railway_graphql(token, query, variables):
+    body = json.dumps({"query": query, "variables": variables}).encode()
+    req = urllib.request.Request(
+        RAILWAY_GRAPHQL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read())
+    if data.get("errors"):
+        raise RuntimeError(data["errors"])
+    return data["data"]
+
+
+def _offer_railway_update(refresh_token):
+    detected = _detect_railway_project()
+    if not detected:
+        print("(Railway project not detected — run `railway link` to enable "
+              "automatic env var updates, or set YOUTUBE_REFRESH_TOKEN "
+              "manually on your services.)")
+        return
+    project_name, project_id, env_id, services = detected
+
+    service_names = ", ".join(s[1] for s in services)
+    prompt = (
+        f"Would you like to update YOUTUBE_REFRESH_TOKEN on Railway project "
+        f"'{project_name}' (services: {service_names})? [Y/n] "
+    )
+    try:
+        answer = input(prompt).strip().lower()
+    except EOFError:
+        answer = "n"
+    if answer not in ("", "y", "yes"):
+        print("Skipped. Update the env var manually when ready.")
+        return
+
+    token = _railway_token()
+    if not token:
+        print(f"ERROR: couldn't read Railway access token from {RAILWAY_CONFIG}.")
+        return
+
+    mutation = (
+        "mutation($p:String!,$e:String!,$s:String!,$v:String!){"
+        " variableUpsert(input:{projectId:$p,environmentId:$e,"
+        "serviceId:$s,name:\"YOUTUBE_REFRESH_TOKEN\",value:$v}) }"
+    )
+    for service_id, service_name in services:
+        try:
+            _railway_graphql(token, mutation, {
+                "p": project_id, "e": env_id,
+                "s": service_id, "v": refresh_token,
+            })
+            print(f"  ✓ {service_name}")
+        except (urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as e:
+            print(f"  ✗ {service_name}: {e}")
+
+    print("\nDone. Railway will redeploy the affected services automatically.")
 
 
 if __name__ == "__main__":
