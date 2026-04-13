@@ -11,6 +11,7 @@ Broadcast discovery still uses REST (liveBroadcasts.list, 1 unit) when
 YOUTUBE_LIVE_CHAT_ID isn't set. Everything else rides the gRPC stream.
 """
 
+import datetime
 import json
 import os
 import sys
@@ -18,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from zoneinfo import ZoneInfo
 
 import grpc
 
@@ -38,6 +40,17 @@ TOKEN_REFRESH_INTERVAL = 2700  # 45 minutes
 
 WELCOME_BACK_THRESHOLD = 12 * 3600  # 12 hours
 SEEN_USERS_MAX = 50_000  # cap to avoid unbounded growth over long streams
+
+# Active window — the poller only opens the gRPC stream between
+# ACTIVE_START_HOUR and ACTIVE_END_HOUR in ACTIVE_TZ (inclusive start,
+# exclusive end). gRPC streamList still bills ~900 units/hour against
+# the Data API's 10k/day bucket on an idle chat, so a 24/7 stream
+# exhausts quota each day. Limiting to one ~12-hour window keeps daily
+# consumption under the cap until a quota increase lands.
+ACTIVE_TZ = ZoneInfo("America/Los_Angeles")
+ACTIVE_START_HOUR = 12
+ACTIVE_END_HOUR = 24  # 24 = 23:59:59.999… (exclusive upper bound)
+IDLE_SLEEP = 60
 
 # LiveChatMessageSnippet.TypeWrapper.Type enum values (from stream_list.proto)
 TYPE_TEXT_MESSAGE = 1
@@ -182,6 +195,11 @@ def _item_to_events(item, seen_users, first_pass):
     return events
 
 
+def in_active_window():
+    now = datetime.datetime.now(ACTIVE_TZ)
+    return ACTIVE_START_HOUR <= now.hour < ACTIVE_END_HOUR
+
+
 def run():
     config = load_token_config()
     access_token = get_access_token_retrying(config)
@@ -222,8 +240,31 @@ def run():
     first_pass = True
     next_page_token = ""
     reconnect_delay = 5
+    was_idle = False
 
     while True:
+        if not in_active_window():
+            if not was_idle:
+                now_local = datetime.datetime.now(ACTIVE_TZ).strftime("%H:%M %Z")
+                print(
+                    f"[chat] Outside active window "
+                    f"({ACTIVE_START_HOUR:02d}:00-{ACTIVE_END_HOUR:02d}:00 "
+                    f"{ACTIVE_TZ.key}); sleeping (now {now_local})",
+                    flush=True,
+                )
+                was_idle = True
+            time.sleep(IDLE_SLEEP)
+            continue
+        if was_idle:
+            now_local = datetime.datetime.now(ACTIVE_TZ).strftime("%H:%M %Z")
+            print(f"[chat] Entering active window (now {now_local})", flush=True)
+            was_idle = False
+            # Force a token refresh and a fresh stream on wake.
+            token_refreshed_at = 0
+            first_pass = True
+            next_page_token = ""
+            reconnect_delay = 5
+
         if time.time() - token_refreshed_at > TOKEN_REFRESH_INTERVAL:
             try:
                 access_token = get_access_token_retrying(config)
