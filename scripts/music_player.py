@@ -92,10 +92,14 @@ def save_state(playlist, index):
 
 
 def spawn_decoder():
+    # No -re: decoder runs at disk speed, pipe backpressure paces output.
+    # Downstream ffmpeg's audio encoder is muxed with real-time x11grab video,
+    # so it drains the pipe at exactly 44.1kHz stereo = 176400 B/s. Upstream
+    # blocks on a full 64KB pipe, yielding tight real-time pacing with no
+    # per-file timing artifacts.
     return subprocess.Popen([
         "ffmpeg", "-y",
         "-loglevel", "warning",
-        "-re",
         "-f", "concat", "-safe", "0",
         "-i", CONCAT_LIST,
         "-f", "s16le",
