@@ -79,7 +79,13 @@ def spawn_decoder():
     # -loglevel verbose so libavformat emits "Opening 'X' for reading" on
     # each input switch; a background thread parses these to drive title
     # transitions.
+    # stdbuf forces line-buffered stderr; without it glibc block-buffers
+    # ffmpeg's stderr (it's a pipe, not a tty) and the stderr_reader sees
+    # nothing until the buffer fills — the "Opening 'X' for reading" lines
+    # that drive title transitions never arrive and the title sticks on
+    # song 1 of the concat.
     return subprocess.Popen([
+        "stdbuf", "-oL", "-eL",
         "ffmpeg", "-y",
         "-loglevel", "verbose",
         "-f", "concat", "-safe", "0",
