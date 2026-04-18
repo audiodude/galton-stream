@@ -53,8 +53,8 @@ PREFIX = "Galton monitor:"
 # card without escalating failures. Must match ACTIVE_*_HOUR in
 # galton-stream's start.sh.
 ACTIVE_TZ = ZoneInfo("America/Los_Angeles")
-ACTIVE_START_HOUR = 11
-ACTIVE_END_HOUR = 22
+ACTIVE_START_HOUR = 12
+ACTIVE_END_HOUR = 18
 
 
 def in_active_window():

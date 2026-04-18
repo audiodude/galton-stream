@@ -15,8 +15,8 @@ YOUTUBE_STREAM_KEY="${YOUTUBE_STREAM_KEY:-test}"
 # start.sh sleeps; galton-monitor (which carries the same schedule)
 # streams the fallback card so the YouTube broadcast stays continuously
 # live.
-ACTIVE_START_HOUR=11
-ACTIVE_END_HOUR=22
+ACTIVE_START_HOUR=12
+ACTIVE_END_HOUR=18
 
 in_active_window() {
     local h

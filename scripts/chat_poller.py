@@ -39,6 +39,13 @@ TOKEN_REFRESH_INTERVAL = 2700  # 45 minutes
 WELCOME_BACK_THRESHOLD = 12 * 3600  # 12 hours
 SEEN_USERS_MAX = 50_000  # cap to avoid unbounded growth over long streams
 
+# Sleep between gRPC stream reconnects. YouTube's streamList is really
+# long-poll dressed as gRPC: each call closes after ~10s and ~1.5
+# billable responses. Without a sleep we burn ~2,700 quota units/hour;
+# adding RECONNECT_SLEEP throttles to fit under YouTube's 10k/day default
+# cap during the active window. See "live hours vs sleep" table.
+RECONNECT_SLEEP = 6
+
 # LiveChatMessageSnippet.TypeWrapper.Type enum values (from stream_list.proto)
 TYPE_TEXT_MESSAGE = 1
 TYPE_SUPER_CHAT = 15
@@ -275,6 +282,7 @@ def run():
                         print(f"  {e['type']}: {e['name']}", flush=True)
 
             reconnect_delay = 5
+            time.sleep(RECONNECT_SLEEP)
         except grpc.RpcError as e:
             code = e.code() if hasattr(e, "code") else None
             details = e.details() if hasattr(e, "details") else str(e)
