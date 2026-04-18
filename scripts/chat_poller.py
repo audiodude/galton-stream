@@ -250,11 +250,23 @@ def run():
             )
 
             got_any = False
+            response_idx = 0
             for response in stub.StreamList(request, metadata=metadata):
                 got_any = True
+                response_idx += 1
                 events = []
                 for item in response.items:
                     events.extend(_item_to_events(item, seen_users, first_pass))
+
+                if response.items:
+                    sample = response.items[0]
+                    sample_name = (sample.author_details.display_name or "?")[:30]
+                    print(
+                        f"[chat] resp #{response_idx} items={len(response.items)} "
+                        f"events={len(events)} first={sample_name!r} "
+                        f"first_pass={first_pass}",
+                        flush=True,
+                    )
 
                 if response.next_page_token:
                     next_page_token = response.next_page_token
