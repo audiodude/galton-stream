@@ -260,20 +260,25 @@ def run():
                     next_page_token = response.next_page_token
 
                 if first_pass:
-                    continue  # drop initial history snapshot
+                    # The first response on a fresh stream is the backfill
+                    # snapshot — drop its events (we don't want to flood
+                    # joins for everyone in chat history) but keep the
+                    # seen_users population _item_to_events did. Every
+                    # subsequent response on this same long-lived stream
+                    # is a real-time push and must NOT be dropped.
+                    first_pass = False
+                    print(
+                        f"[chat] Initial catch-up complete, "
+                        f"{len(seen_users)} known users, "
+                        f"{len(response.items)} backfill items dropped",
+                        flush=True,
+                    )
+                    continue
 
                 if events:
                     write_events(events)
                     for e in events:
                         print(f"  {e['type']}: {e['name']}", flush=True)
-
-            if first_pass:
-                first_pass = False
-                print(
-                    f"[chat] Initial catch-up complete, "
-                    f"{len(seen_users)} known users",
-                    flush=True,
-                )
 
             if not got_any:
                 print("[chat] Stream ended with no responses; reconnecting",
