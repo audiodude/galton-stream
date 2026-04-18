@@ -251,6 +251,7 @@ def run():
 
             got_any = False
             response_idx = 0
+            stream_t0 = time.time()
             for response in stub.StreamList(request, metadata=metadata):
                 got_any = True
                 response_idx += 1
@@ -258,15 +259,18 @@ def run():
                 for item in response.items:
                     events.extend(_item_to_events(item, seen_users, first_pass))
 
+                sample_name = ""
                 if response.items:
-                    sample = response.items[0]
-                    sample_name = (sample.author_details.display_name or "?")[:30]
-                    print(
-                        f"[chat] resp #{response_idx} items={len(response.items)} "
-                        f"events={len(events)} first={sample_name!r} "
-                        f"first_pass={first_pass}",
-                        flush=True,
-                    )
+                    sample_name = (response.items[0].author_details.display_name or "?")[:30]
+                poll_ms = response.polling_interval_millis if hasattr(response, "polling_interval_millis") else None
+                next_tok = (response.next_page_token or "")[:12]
+                print(
+                    f"[chat] resp #{response_idx} items={len(response.items)} "
+                    f"events={len(events)} first={sample_name!r} "
+                    f"first_pass={first_pass} poll_ms={poll_ms} "
+                    f"next_tok={next_tok!r}",
+                    flush=True,
+                )
 
                 if response.next_page_token:
                     next_page_token = response.next_page_token
@@ -292,9 +296,12 @@ def run():
                     for e in events:
                         print(f"  {e['type']}: {e['name']}", flush=True)
 
-            if not got_any:
-                print("[chat] Stream ended with no responses; reconnecting",
-                      flush=True)
+            elapsed = time.time() - stream_t0
+            print(
+                f"[chat] Stream loop exited normally after {elapsed:.1f}s, "
+                f"{response_idx} responses, got_any={got_any}",
+                flush=True,
+            )
 
             reconnect_delay = 5
         except grpc.RpcError as e:
