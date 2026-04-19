@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 
 import grpc
 
@@ -144,6 +145,16 @@ def find_active_broadcast(access_token):
 
 # ---------- gRPC streaming ----------
 
+def _parse_published_at(s):
+    """ISO 8601 → unix timestamp. Falls back to now() on parse failure."""
+    if not s:
+        return time.time()
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return time.time()
+
+
 def _item_to_events(item, seen_users, first_pass):
     """Map a LiveChatMessage proto to 0+ IPC events for Godot."""
     snippet = item.snippet
@@ -152,6 +163,11 @@ def _item_to_events(item, seen_users, first_pass):
     name = author.display_name or "Unknown"
     channel_id = author.channel_id
     now = time.time()
+    # seen_users tracks "last actual message time", not "last processed time" —
+    # backfill must seed with the message's real published_at so a user who
+    # chatted yesterday isn't stamped as seen-just-now and silently deduped
+    # out of today's welcome_back.
+    msg_time = _parse_published_at(snippet.published_at)
 
     events = []
 
@@ -161,10 +177,10 @@ def _item_to_events(item, seen_users, first_pass):
         last = seen_users.get(channel_id)
         if last is None:
             events.append({"type": "join", "name": name, "time": now})
-        elif now - last >= WELCOME_BACK_THRESHOLD:
+        elif msg_time - last >= WELCOME_BACK_THRESHOLD:
             events.append({"type": "welcome_back", "name": name, "time": now})
     if channel_id:
-        seen_users[channel_id] = now
+        seen_users[channel_id] = msg_time
         if len(seen_users) > SEEN_USERS_MAX:
             # Evict oldest 10% to amortize the cost.
             cutoff = sorted(seen_users.values())[len(seen_users) // 10]
