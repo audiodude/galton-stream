@@ -390,7 +390,7 @@ def set_radio_online(video_id):
                     {
                         "Redirect": {
                             "HostName": "www.youtube.com",
-                            "HttpRedirectCode": "301",
+                            "HttpRedirectCode": "302",
                             "Protocol": "https",
                             "ReplaceKeyWith": f"live/{video_id}",
                         }
@@ -467,23 +467,23 @@ def reconcile_broadcast():
             set_radio_online(vid)
         return
 
-    if not in_window and actives:
-        for b in actives:
+    if not in_window:
+        # Only tear down broadcasts that are actually running — scheduled-
+        # but-never-started (upcoming/created/ready) broadcasts are the
+        # user's, not ours, so leave them alone.
+        running = [
+            b for b in actives
+            if b.get("status", {}).get("lifeCycleStatus") in ("live", "testing")
+        ]
+        for b in running:
             bid = b.get("id")
-            life = b.get("status", {}).get("lifeCycleStatus", "")
-            # Only live broadcasts transition to complete via the transition
-            # endpoint; ones still in created/ready need a direct status change.
-            if life in ("live", "testing"):
-                transition_broadcast(bid, "complete")
+            transition_broadcast(bid, "complete")
             set_broadcast_privacy(bid, "private")
             send_telegram(
                 f"{PREFIX} Broadcast ended: https://www.youtube.com/live/{bid}"
             )
-        set_radio_offline()
-        return
-
-    if not in_window and radio_current_video_id() is not None:
-        set_radio_offline()
+        if radio_current_video_id() is not None:
+            set_radio_offline()
 
 
 def on_state_transition(old_state, new_state, reason):
