@@ -228,6 +228,30 @@ def transition_broadcast(broadcast_id, target_status):
     return False
 
 
+def delete_broadcast(broadcast_id):
+    """Delete a broadcast. Used to clean up stale scheduled-but-never-started
+    broadcasts that would otherwise hijack ffmpeg's push once it connects."""
+    token = get_access_token()
+    if not token:
+        return False
+    try:
+        req = urllib.request.Request(
+            f"https://www.googleapis.com/youtube/v3/liveBroadcasts?id={broadcast_id}",
+            method="DELETE",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        urllib.request.urlopen(req, timeout=15)
+        log(f"Deleted broadcast {broadcast_id}")
+        return True
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        log(f"delete_broadcast {broadcast_id} failed ({e.code}): {body}")
+        return False
+    except Exception as e:
+        log(f"delete_broadcast {broadcast_id} exception: {e}")
+        return False
+
+
 def set_broadcast_privacy(broadcast_id, privacy):
     """Set privacyStatus on a broadcast (e.g. 'private' after VOD)."""
     current = youtube_api_request(
@@ -422,32 +446,85 @@ def set_radio_offline():
         return False
 
 
+def _broadcast_is_recent(b, max_age_min=15):
+    """True if the broadcast was scheduled within the last N minutes — i.e.
+    we just created it and are waiting for ffmpeg. Older than that and a
+    non-live bound broadcast is stale (a dangerous stream hijacker)."""
+    sst = b.get("snippet", {}).get("scheduledStartTime")
+    if not sst:
+        return False
+    try:
+        t = datetime.datetime.fromisoformat(sst.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return False
+    return (datetime.datetime.now(datetime.timezone.utc) - t) < datetime.timedelta(minutes=max_age_min)
+
+
 def reconcile_broadcast():
     """Edge-triggered broadcast lifecycle. Idempotent, safe to call every poll.
 
-    In window + no active broadcast     -> clone metadata from most recent broadcast,
-                                            create new one, bind stable liveStream.
-    In window + broadcast is live       -> make sure radio points at it.
-    Outside window + active broadcast   -> transition to complete + set private
+    In window + live broadcast          -> make sure radio points at it.
+    In window + our recent broadcast    -> wait (ffmpeg still connecting).
+    In window + no live/recent          -> delete any stale bound broadcasts,
+                                            clone metadata from most recent,
+                                            create new + bind stable liveStream.
+    Outside window + running broadcast  -> transition to complete + set private
                                             + flip radio to offline.
-    Outside window + no active          -> make sure radio is offline.
+    Outside window + no running         -> make sure radio is offline.
     """
     in_window = in_active_window()
     actives = get_live_or_pending_broadcasts()
     live_broadcast = next(
         (
             b for b in actives
-            if b.get("status", {}).get("lifeCycleStatus") == "live"
+            if b.get("status", {}).get("lifeCycleStatus") in ("live", "testing")
         ),
         None,
     )
 
-    if in_window and not actives:
+    if in_window and live_broadcast:
+        vid = live_broadcast.get("id")
+        if radio_current_video_id() != vid:
+            set_radio_online(vid)
+        return
+
+    if in_window:
         prev = get_recent_broadcast()
         if not prev:
             log("No previous broadcast to clone metadata from; skipping create")
             return
         stream_id = get_bound_stream_id(prev)
+
+        # If we have a recently-created broadcast bound to our stream,
+        # ffmpeg is still connecting — don't spawn a duplicate.
+        recent_ours = next(
+            (
+                b for b in actives
+                if b.get("status", {}).get("lifeCycleStatus") in ("created", "ready")
+                and b.get("contentDetails", {}).get("boundStreamId") == stream_id
+                and _broadcast_is_recent(b)
+            ),
+            None,
+        )
+        if recent_ours:
+            log(f"Waiting for ffmpeg on broadcast {recent_ours.get('id')}")
+            return
+
+        # Any stale upcoming broadcast bound to our stream will hijack
+        # ffmpeg's push (YouTube auto-starts the bound one). Delete them
+        # first so our fresh create+bind wins.
+        for b in actives:
+            life = b.get("status", {}).get("lifeCycleStatus", "")
+            bound = b.get("contentDetails", {}).get("boundStreamId")
+            if (
+                life in ("created", "ready")
+                and bound == stream_id
+                and not _broadcast_is_recent(b)
+            ):
+                bid = b.get("id")
+                log(f"Deleting stale broadcast {bid} bound to our stream")
+                delete_broadcast(bid)
+
         new_id, new_video_id = create_new_broadcast(prev)
         if not new_id:
             log("create_new_broadcast failed")
@@ -461,29 +538,22 @@ def reconcile_broadcast():
         )
         return
 
-    if in_window and live_broadcast:
-        vid = live_broadcast.get("id")
-        if radio_current_video_id() != vid:
-            set_radio_online(vid)
-        return
-
-    if not in_window:
-        # Only tear down broadcasts that are actually running — scheduled-
-        # but-never-started (upcoming/created/ready) broadcasts are the
-        # user's, not ours, so leave them alone.
-        running = [
-            b for b in actives
-            if b.get("status", {}).get("lifeCycleStatus") in ("live", "testing")
-        ]
-        for b in running:
-            bid = b.get("id")
-            transition_broadcast(bid, "complete")
-            set_broadcast_privacy(bid, "private")
-            send_telegram(
-                f"{PREFIX} Broadcast ended: https://www.youtube.com/live/{bid}"
-            )
-        if radio_current_video_id() is not None:
-            set_radio_offline()
+    # Outside the active window: only tear down broadcasts that are
+    # actually running. Scheduled-but-never-started (upcoming/created/ready)
+    # broadcasts are the user's own, leave them alone.
+    running = [
+        b for b in actives
+        if b.get("status", {}).get("lifeCycleStatus") in ("live", "testing")
+    ]
+    for b in running:
+        bid = b.get("id")
+        transition_broadcast(bid, "complete")
+        set_broadcast_privacy(bid, "private")
+        send_telegram(
+            f"{PREFIX} Broadcast ended: https://www.youtube.com/live/{bid}"
+        )
+    if radio_current_video_id() is not None:
+        set_radio_offline()
 
 
 def on_state_transition(old_state, new_state, reason):
