@@ -12,9 +12,9 @@ YOUTUBE_STREAM_KEY="${YOUTUBE_STREAM_KEY:-test}"
 
 # Active window — galton-stream only runs the Godot/ffmpeg/chat/music
 # stack between these hours in America/Los_Angeles. Outside the window
-# start.sh sleeps; galton-monitor (which carries the same schedule)
-# streams the fallback card so the YouTube broadcast stays continuously
-# live.
+# start.sh sleeps and no broadcast exists: galton-monitor creates the
+# day's YouTube broadcast at window open and tears it down (transitions
+# to complete, becomes a private VOD) at window close.
 ACTIVE_START_HOUR=12
 ACTIVE_END_HOUR=18
 

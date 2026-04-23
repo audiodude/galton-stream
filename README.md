@@ -108,16 +108,25 @@ Railway auto-deploys both services from the `release` branch (not `main`). Push 
 | Service | Purpose | Watch paths |
 |---------|---------|-------------|
 | **galton-stream** | Godot + FFmpeg streaming to YouTube | Everything except `monitor/` |
-| **galton-monitor** | Polls galton-stream health, manages YouTube broadcast recovery | `monitor/**` |
+| **galton-monitor** | Manages the day's YouTube broadcast, polls galton-stream health, updates the radio redirect | `monitor/**` |
 
-galton-monitor polls galton-stream's `/health` endpoint every 120s over Railway internal networking. Recovery escalation:
+### Daily broadcast lifecycle
+
+YouTube deranks channels that stream 24/7. galton-monitor creates a fresh broadcast at window open (12:00 PT) and tears it down at window close (18:00 PT):
+
+- **At window open** — clone metadata (title, description, etc.) from the most recent broadcast via the YouTube API, create a new broadcast with `ultraLow` latency, and bind the stable `liveStream` (so `YOUTUBE_STREAM_KEY` is unchanged). Once the broadcast goes live, update `radio.dangerthirdrail.com` to redirect to `youtube.com/live/<new_video_id>`.
+- **At window close** — transition the broadcast to `complete`, set privacy to `private`, and flip the radio redirect to the offline title card.
+
+The radio redirect is implemented as an S3 website bucket (`radio.dangerthirdrail.com`) fronted by CloudFront. Online = bucket routing rule 301s to YouTube. Offline = routing rule is removed and `index.html` (a responsive title card) is served.
+
+### Recovery escalation (within the active window)
+
+galton-monitor polls galton-stream's `/health` endpoint every 120s over Railway internal networking:
 
 1. **1 fail (120s)** — start fallback stream (backup image to YouTube)
 2. **5 fails (600s)** — restart galton-stream container
 3. **6 fails (720s)** — redeploy galton-stream via Railway API
 4. **7 fails (840s)** — alert that all recovery failed
-
-If YouTube kills the broadcast while galton-stream is healthy, galton-monitor creates a new broadcast with the same settings and updates the old broadcast's description with a link to the new one.
 
 ### Running locally
 

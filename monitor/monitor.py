@@ -21,6 +21,9 @@ import urllib.parse
 import urllib.request
 from zoneinfo import ZoneInfo
 
+import boto3
+import botocore.exceptions
+
 # Configuration
 GALTON_STREAM_URL = os.environ.get(
     "GALTON_STREAM_URL", "http://galton-stream.railway.internal:8080"
@@ -55,6 +58,22 @@ PREFIX = "Galton monitor:"
 ACTIVE_TZ = ZoneInfo("America/Los_Angeles")
 ACTIVE_START_HOUR = 12
 ACTIVE_END_HOUR = 18
+
+# Radio landing page (radio.dangerthirdrail.com) — S3 website bucket
+# fronted by CloudFront. In-window: bucket routing rule 301-redirects to
+# youtube.com/live/<video_id>. Out-of-window: routing rule removed, index.html
+# (the offline title card) is served.
+RADIO_BUCKET = os.environ.get("RADIO_BUCKET", "radio.dangerthirdrail.com")
+RADIO_CF_DISTRIBUTION_ID = os.environ.get(
+    "RADIO_CF_DISTRIBUTION_ID", "E24RTA588S2VSH"
+)
+RADIO_REGION = os.environ.get("RADIO_REGION", "us-east-1")
+RADIO_OFFLINE_HTML_PATH = os.environ.get(
+    "RADIO_OFFLINE_HTML_PATH", "/app/radio-offline.html"
+)
+
+_s3 = boto3.client("s3", region_name=RADIO_REGION)
+_cf = boto3.client("cloudfront", region_name=RADIO_REGION)
 
 
 def in_active_window():
@@ -170,9 +189,9 @@ def youtube_api_request(url, method="GET", body=None):
 
 
 def get_recent_broadcast():
-    """Get the most recent broadcast (active or complete). Returns broadcast resource or None."""
-    # Try active first
-    for status in ("active", "completed"):
+    """Get the most recent broadcast (any status). Used to clone metadata
+    for the next day's broadcast."""
+    for status in ("active", "upcoming", "completed"):
         result = youtube_api_request(
             "https://www.googleapis.com/youtube/v3/liveBroadcasts"
             f"?part=snippet,status,contentDetails&broadcastStatus={status}&maxResults=1"
@@ -180,6 +199,64 @@ def get_recent_broadcast():
         if result and result.get("items"):
             return result["items"][0]
     return None
+
+
+def get_live_or_pending_broadcasts():
+    """Return broadcasts currently in active or upcoming state (i.e. still
+    consuming a stream slot). Empty list means no broadcast exists right now."""
+    broadcasts = []
+    for status in ("active", "upcoming"):
+        result = youtube_api_request(
+            "https://www.googleapis.com/youtube/v3/liveBroadcasts"
+            f"?part=snippet,status,contentDetails&broadcastStatus={status}&maxResults=10"
+        )
+        if result:
+            broadcasts.extend(result.get("items", []))
+    return broadcasts
+
+
+def transition_broadcast(broadcast_id, target_status):
+    """Transition a broadcast through its lifecycle. target_status: testing, live, complete."""
+    result = youtube_api_request(
+        "https://www.googleapis.com/youtube/v3/liveBroadcasts/transition"
+        f"?part=id,status&id={broadcast_id}&broadcastStatus={target_status}",
+        method="POST",
+    )
+    if result:
+        log(f"Transitioned broadcast {broadcast_id} -> {target_status}")
+        return True
+    return False
+
+
+def set_broadcast_privacy(broadcast_id, privacy):
+    """Set privacyStatus on a broadcast (e.g. 'private' after VOD)."""
+    current = youtube_api_request(
+        f"https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,status&id={broadcast_id}"
+    )
+    if not current or not current.get("items"):
+        log(f"set_broadcast_privacy: could not fetch {broadcast_id}")
+        return False
+    item = current["items"][0]
+    snippet = item.get("snippet", {})
+    body = {
+        "id": broadcast_id,
+        "snippet": {
+            "title": snippet.get("title", ""),
+            "scheduledStartTime": snippet.get(
+                "scheduledStartTime", "1970-01-01T00:00:00Z"
+            ),
+        },
+        "status": {"privacyStatus": privacy},
+    }
+    result = youtube_api_request(
+        "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,status",
+        method="PUT",
+        body=body,
+    )
+    if result:
+        log(f"Set broadcast {broadcast_id} privacy -> {privacy}")
+        return True
+    return False
 
 
 def get_bound_stream_id(broadcast):
@@ -255,53 +332,158 @@ def update_broadcast_description(broadcast_id, new_description):
     return result is not None
 
 
-def handle_youtube_broadcast_ended():
-    """Detect ended broadcast, create new one, update old description.
-    Returns True if a new broadcast was created."""
-    old_broadcast = get_recent_broadcast()
-    if not old_broadcast:
-        log("No recent broadcast found")
+def radio_current_video_id():
+    """Return the YouTube video id radio.dangerthirdrail.com currently
+    redirects to, or None if the bucket is serving the offline page."""
+    try:
+        cfg = _s3.get_bucket_website(Bucket=RADIO_BUCKET)
+    except botocore.exceptions.ClientError as e:
+        log(f"get_bucket_website failed: {e}")
+        return None
+    rules = cfg.get("RoutingRules") or []
+    if not rules:
+        return None
+    key = rules[0].get("Redirect", {}).get("ReplaceKeyWith", "")
+    if key.startswith("live/"):
+        return key[len("live/"):]
+    return None
+
+
+def _invalidate_radio():
+    """Invalidate CloudFront cache so the new redirect takes effect immediately."""
+    try:
+        _cf.create_invalidation(
+            DistributionId=RADIO_CF_DISTRIBUTION_ID,
+            InvalidationBatch={
+                "Paths": {"Quantity": 1, "Items": ["/*"]},
+                "CallerReference": f"radio-{int(time.time())}",
+            },
+        )
+    except Exception as e:
+        log(f"CloudFront invalidation failed: {e}")
+
+
+def _upload_offline_html():
+    """Ensure the offline title card is the bucket's index.html."""
+    if not os.path.exists(RADIO_OFFLINE_HTML_PATH):
+        log(f"Offline HTML not found at {RADIO_OFFLINE_HTML_PATH}, skipping upload")
         return False
-
-    old_status = old_broadcast.get("status", {}).get("lifeCycleStatus", "")
-    old_id = old_broadcast.get("id", "")
-
-    if old_status not in ("complete", "revoked"):
-        log(f"Broadcast {old_id} status is {old_status}, not ended")
-        return False
-
-    log(f"Broadcast {old_id} has ended ({old_status}). Creating replacement...")
-
-    # Get the stream bound to the old broadcast so we can reuse it
-    stream_id = get_bound_stream_id(old_broadcast)
-
-    # Create new broadcast with same settings
-    new_id, new_video_id = create_new_broadcast(old_broadcast)
-    if not new_id:
-        log("Failed to create new broadcast")
-        return False
-
-    # Bind the same stream to the new broadcast
-    if stream_id:
-        if not bind_stream_to_broadcast(new_id, stream_id):
-            log(f"Failed to bind stream {stream_id} to new broadcast {new_id}")
-    else:
-        log("No stream ID found on old broadcast — FFmpeg will auto-bind on connect")
-
-    # Update old broadcast description to point to new one
-    old_snippet = old_broadcast.get("snippet", {})
-    old_desc = old_snippet.get("description", "")
-    redirect_line = f"\n\nWatch Live! https://www.youtube.com/live/{new_video_id}"
-    update_broadcast_description(old_id, old_desc + redirect_line)
-
-    msg = (
-        f"{PREFIX} YouTube broadcast ended. Created new broadcast: "
-        f"https://www.youtube.com/live/{new_video_id} "
-        f"(old: https://www.youtube.com/live/{old_id})"
-    )
-    send_telegram(msg)
-
+    with open(RADIO_OFFLINE_HTML_PATH, "rb") as f:
+        _s3.put_object(
+            Bucket=RADIO_BUCKET,
+            Key="index.html",
+            Body=f.read(),
+            ContentType="text/html; charset=utf-8",
+            CacheControl="public, max-age=60",
+        )
     return True
+
+
+def set_radio_online(video_id):
+    """Point radio.dangerthirdrail.com at https://www.youtube.com/live/<video_id>."""
+    try:
+        _s3.put_bucket_website(
+            Bucket=RADIO_BUCKET,
+            WebsiteConfiguration={
+                "IndexDocument": {"Suffix": "index.html"},
+                "RoutingRules": [
+                    {
+                        "Redirect": {
+                            "HostName": "www.youtube.com",
+                            "HttpRedirectCode": "301",
+                            "Protocol": "https",
+                            "ReplaceKeyWith": f"live/{video_id}",
+                        }
+                    }
+                ],
+            },
+        )
+        _invalidate_radio()
+        log(f"Radio ONLINE -> youtube.com/live/{video_id}")
+        return True
+    except Exception as e:
+        log(f"set_radio_online failed: {e}")
+        return False
+
+
+def set_radio_offline():
+    """Drop the routing rule so the bucket's index.html (offline title card) is served."""
+    try:
+        _upload_offline_html()
+        _s3.put_bucket_website(
+            Bucket=RADIO_BUCKET,
+            WebsiteConfiguration={"IndexDocument": {"Suffix": "index.html"}},
+        )
+        _invalidate_radio()
+        log("Radio OFFLINE -> serving index.html")
+        return True
+    except Exception as e:
+        log(f"set_radio_offline failed: {e}")
+        return False
+
+
+def reconcile_broadcast():
+    """Edge-triggered broadcast lifecycle. Idempotent, safe to call every poll.
+
+    In window + no active broadcast     -> clone metadata from most recent broadcast,
+                                            create new one, bind stable liveStream.
+    In window + broadcast is live       -> make sure radio points at it.
+    Outside window + active broadcast   -> transition to complete + set private
+                                            + flip radio to offline.
+    Outside window + no active          -> make sure radio is offline.
+    """
+    in_window = in_active_window()
+    actives = get_live_or_pending_broadcasts()
+    live_broadcast = next(
+        (
+            b for b in actives
+            if b.get("status", {}).get("lifeCycleStatus") == "live"
+        ),
+        None,
+    )
+
+    if in_window and not actives:
+        prev = get_recent_broadcast()
+        if not prev:
+            log("No previous broadcast to clone metadata from; skipping create")
+            return
+        stream_id = get_bound_stream_id(prev)
+        new_id, new_video_id = create_new_broadcast(prev)
+        if not new_id:
+            log("create_new_broadcast failed")
+            return
+        if stream_id:
+            bind_stream_to_broadcast(new_id, stream_id)
+        else:
+            log("No stream bound on previous broadcast; ffmpeg will auto-bind")
+        send_telegram(
+            f"{PREFIX} New broadcast created: https://www.youtube.com/live/{new_video_id}"
+        )
+        return
+
+    if in_window and live_broadcast:
+        vid = live_broadcast.get("id")
+        if radio_current_video_id() != vid:
+            set_radio_online(vid)
+        return
+
+    if not in_window and actives:
+        for b in actives:
+            bid = b.get("id")
+            life = b.get("status", {}).get("lifeCycleStatus", "")
+            # Only live broadcasts transition to complete via the transition
+            # endpoint; ones still in created/ready need a direct status change.
+            if life in ("live", "testing"):
+                transition_broadcast(bid, "complete")
+            set_broadcast_privacy(bid, "private")
+            send_telegram(
+                f"{PREFIX} Broadcast ended: https://www.youtube.com/live/{bid}"
+            )
+        set_radio_offline()
+        return
+
+    if not in_window and radio_current_video_id() is not None:
+        set_radio_offline()
 
 
 def on_state_transition(old_state, new_state, reason):
@@ -489,11 +671,22 @@ def main():
         f"refresh_token={'set' if YOUTUBE_REFRESH_TOKEN else 'MISSING'}")
     send_telegram(f"{PREFIX} Monitor service started.")
 
+    first_iteration = True
     while True:
-        time.sleep(POLL_INTERVAL)
+        if not first_iteration:
+            time.sleep(POLL_INTERVAL)
+        first_iteration = False
 
-        # Outside the active window galton-stream intentionally sleeps;
-        # we run the fallback card and suppress all escalation.
+        # Lifecycle: create the day's broadcast at window open, tear it
+        # down at window close, keep the radio redirect pointing at the
+        # right place. Runs every poll and is idempotent.
+        try:
+            reconcile_broadcast()
+        except Exception as e:
+            log(f"reconcile_broadcast raised: {e}")
+
+        # Outside the active window, galton-stream intentionally sleeps
+        # and there is no broadcast to push to — nothing to monitor.
         if not in_active_window():
             if current_state != "SCHEDULED_OFF":
                 set_state(
@@ -504,13 +697,12 @@ def main():
                 consecutive_failures = 0
                 chat_poller_dead_count = 0
                 title_writer_dead_count = 0
-            if fallback_proc is None or fallback_proc.poll() is not None:
-                start_fallback()
+            stop_fallback()
             continue
 
-        # Entering the active window from SCHEDULED_OFF: keep fallback
-        # running while galton-stream spins up; the NORMAL-recovery branch
-        # below will stop it once health comes back green.
+        # Entering the active window from SCHEDULED_OFF: the fallback card
+        # covers galton-stream spin-up; the NORMAL-recovery branch below
+        # stops it once health comes back green.
         if current_state == "SCHEDULED_OFF":
             set_state("FALLBACK_ACTIVE", "entering active window")
             consecutive_failures = 0

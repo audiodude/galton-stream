@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Danger Third Rail Radio</title>
+  <style>
+    :root {
+      --red: #ff2a2a;
+      --dim: #888;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      background: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   "Helvetica Neue", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    main {
+      min-height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 5vh 6vw;
+      text-align: center;
+    }
+    h1 {
+      color: var(--red);
+      font-weight: 900;
+      font-size: clamp(2.5rem, 10vw, 7.5rem);
+      line-height: 1.05;
+      letter-spacing: -0.01em;
+      text-transform: uppercase;
+    }
+    h1 .line { display: block; }
+    .subtitle {
+      margin-top: clamp(1.5rem, 4vh, 3rem);
+      font-size: clamp(1.1rem, 3vw, 2rem);
+      font-weight: 400;
+      color: #fff;
+    }
+    .domain {
+      margin-top: clamp(0.75rem, 2vh, 1.5rem);
+      font-size: clamp(0.85rem, 2vw, 1.25rem);
+      color: var(--dim);
+      letter-spacing: 0.02em;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>
+      <span class="line">Danger Third Rail</span>
+      <span class="line">Radio</span>
+    </h1>
+    <p class="subtitle">Streaming live 12 &ndash; 6 PM PT</p>
+    <p class="domain">radio.dangerthirdrail.com</p>
+  </main>
+</body>
+</html>
