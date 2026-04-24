@@ -51,13 +51,24 @@ _token_expires = 0
 
 PREFIX = "Galton monitor:"
 
-# Active window — galton-stream only runs the Godot/ffmpeg/chat/music
-# stack in this window. Outside it, the monitor streams the fallback
-# card without escalating failures. Must match ACTIVE_*_HOUR in
-# galton-stream's start.sh.
+# Two overlapping windows (America/Los_Angeles):
+#
+#  - CONSUMER window (12:00-18:00 PT): what viewers see. radio.dangerthirdrail.com
+#    redirects to the live stream only during this window; outside it, the
+#    offline title card is served.
+#  - OPERATIONAL window (11:45-18:05 PT): wraps the consumer window with 15 min
+#    of warmup and 5 min of cooldown. galton-stream (Godot/ffmpeg/chat/music)
+#    runs for the full operational window, so the YouTube broadcast is already
+#    live by the time the consumer window opens at 12:00 sharp, and the teardown
+#    (transition to complete, radio -> offline) doesn't steal the last minutes
+#    of the 18:00 cut.
+#
+# OPERATIONAL_START must match the window check in galton-stream's start.sh.
 ACTIVE_TZ = ZoneInfo("America/Los_Angeles")
-ACTIVE_START_HOUR = 12
-ACTIVE_END_HOUR = 18
+OPERATIONAL_START = (11, 45)
+CONSUMER_START = (12, 0)
+CONSUMER_END = (18, 0)
+OPERATIONAL_END = (18, 5)
 
 # Radio landing page (radio.dangerthirdrail.com) — S3 website bucket
 # fronted by CloudFront. In-window: bucket routing rule 301-redirects to
@@ -76,9 +87,41 @@ _s3 = boto3.client("s3", region_name=RADIO_REGION)
 _cf = boto3.client("cloudfront", region_name=RADIO_REGION)
 
 
-def in_active_window():
+def _in_window(start_hm, end_hm, now=None):
+    now = now or datetime.datetime.now(ACTIVE_TZ)
+    hm = (now.hour, now.minute)
+    return start_hm <= hm < end_hm
+
+
+def in_operational_window(now=None):
+    return _in_window(OPERATIONAL_START, OPERATIONAL_END, now)
+
+
+def in_consumer_window(now=None):
+    return _in_window(CONSUMER_START, CONSUMER_END, now)
+
+
+# Back-compat alias — existing callers that ask "is galton-stream supposed to
+# be running right now" want the operational window.
+def in_active_window(now=None):
+    return in_operational_window(now)
+
+
+def _seconds_until_next_boundary():
+    """Seconds until the next window edge (any of the four). Used to size the
+    poll sleep so we always wake up within a second of 12:00 / 18:00 / etc."""
     now = datetime.datetime.now(ACTIVE_TZ)
-    return ACTIVE_START_HOUR <= now.hour < ACTIVE_END_HOUR
+    today = now.date()
+    tomorrow = today + datetime.timedelta(days=1)
+    candidates = []
+    for h, m in (OPERATIONAL_START, CONSUMER_START, CONSUMER_END, OPERATIONAL_END):
+        for day in (today, tomorrow):
+            t = datetime.datetime.combine(
+                day, datetime.time(h, m), tzinfo=ACTIVE_TZ
+            )
+            if t > now:
+                candidates.append((t - now).total_seconds())
+    return min(candidates) if candidates else float("inf")
 
 # State
 fallback_proc = None
@@ -464,19 +507,38 @@ def _broadcast_is_recent(b, max_age_min=15):
     return (datetime.datetime.now(datetime.timezone.utc) - t) < datetime.timedelta(minutes=max_age_min)
 
 
+def _radio_reconcile(live_broadcast):
+    """Make radio.dangerthirdrail.com reflect the consumer window.
+
+    During the consumer window (12:00-18:00 PT), radio redirects to the live
+    broadcast if we have one. Outside, radio serves the offline title card —
+    even if the broadcast is live (it is, during the 11:45-12:00 warmup and
+    18:00-18:05 cooldown bracketing the consumer window)."""
+    if in_consumer_window() and live_broadcast:
+        vid = live_broadcast.get("id")
+        if radio_current_video_id() != vid:
+            set_radio_online(vid)
+    else:
+        if radio_current_video_id() is not None:
+            set_radio_offline()
+
+
 def reconcile_broadcast():
     """Edge-triggered broadcast lifecycle. Idempotent, safe to call every poll.
 
-    In window + live broadcast          -> make sure radio points at it.
-    In window + our recent broadcast    -> wait (ffmpeg still connecting).
-    In window + no live/recent          -> delete any stale bound broadcasts,
-                                            clone metadata from most recent,
-                                            create new + bind stable liveStream.
-    Outside window + running broadcast  -> transition to complete + set private
-                                            + flip radio to offline.
-    Outside window + no running         -> make sure radio is offline.
+    Operational window (11:45-18:05 PT) governs when the broadcast exists and
+    galton-stream is pushing. Consumer window (12:00-18:00 PT) governs the
+    radio redirect.
+
+    Operational + live broadcast      -> sync radio to consumer window.
+    Operational + our recent broadcast-> wait (ffmpeg still connecting).
+    Operational + no live/recent      -> delete stale bound broadcasts,
+                                          clone metadata, create + bind stable
+                                          liveStream, bounce ffmpeg.
+    Outside operational + running     -> transition to complete + set private.
+    Outside operational + not running -> ensure radio is offline.
     """
-    in_window = in_active_window()
+    in_window = in_operational_window()
     actives = get_live_or_pending_broadcasts()
     live_broadcast = next(
         (
@@ -487,9 +549,7 @@ def reconcile_broadcast():
     )
 
     if in_window and live_broadcast:
-        vid = live_broadcast.get("id")
-        if radio_current_video_id() != vid:
-            set_radio_online(vid)
+        _radio_reconcile(live_broadcast)
         return
 
     if in_window:
@@ -548,7 +608,7 @@ def reconcile_broadcast():
         )
         return
 
-    # Outside the active window: only tear down broadcasts that are
+    # Outside operational window: only tear down broadcasts that are
     # actually running. Scheduled-but-never-started (upcoming/created/ready)
     # broadcasts are the user's own, leave them alone.
     running = [
@@ -754,25 +814,32 @@ def main():
     first_iteration = True
     while True:
         if not first_iteration:
-            time.sleep(POLL_INTERVAL)
+            # Sleep to the next poll tick, but no further than the next window
+            # boundary (12:00 / 18:00 etc.) so radio flips and broadcast
+            # teardown happen within a second of the target time. +1s pushes
+            # us just past the boundary so the check sees the new window.
+            sleep_s = min(POLL_INTERVAL, _seconds_until_next_boundary() + 1)
+            time.sleep(max(1, sleep_s))
         first_iteration = False
 
-        # Lifecycle: create the day's broadcast at window open, tear it
-        # down at window close, keep the radio redirect pointing at the
-        # right place. Runs every poll and is idempotent.
+        # Lifecycle: create the day's broadcast during the operational window,
+        # flip the radio redirect in/out according to the consumer window,
+        # tear down at operational end. Runs every poll and is idempotent.
         try:
             reconcile_broadcast()
         except Exception as e:
             log(f"reconcile_broadcast raised: {e}")
 
-        # Outside the active window, galton-stream intentionally sleeps
+        # Outside the operational window, galton-stream intentionally sleeps
         # and there is no broadcast to push to — nothing to monitor.
-        if not in_active_window():
+        if not in_operational_window():
             if current_state != "SCHEDULED_OFF":
                 set_state(
                     "SCHEDULED_OFF",
-                    f"outside active window ({ACTIVE_START_HOUR:02d}:00-"
-                    f"{ACTIVE_END_HOUR:02d}:00 {ACTIVE_TZ.key})",
+                    f"outside operational window ("
+                    f"{OPERATIONAL_START[0]:02d}:{OPERATIONAL_START[1]:02d}-"
+                    f"{OPERATIONAL_END[0]:02d}:{OPERATIONAL_END[1]:02d} "
+                    f"{ACTIVE_TZ.key})",
                 )
                 consecutive_failures = 0
                 chat_poller_dead_count = 0
@@ -780,11 +847,11 @@ def main():
             stop_fallback()
             continue
 
-        # Entering the active window from SCHEDULED_OFF: the fallback card
-        # covers galton-stream spin-up; the NORMAL-recovery branch below
+        # Entering the operational window from SCHEDULED_OFF: the fallback
+        # card covers galton-stream spin-up; the NORMAL-recovery branch below
         # stops it once health comes back green.
         if current_state == "SCHEDULED_OFF":
-            set_state("FALLBACK_ACTIVE", "entering active window")
+            set_state("FALLBACK_ACTIVE", "entering operational window")
             consecutive_failures = 0
 
         # Keep fallback alive if it should be running

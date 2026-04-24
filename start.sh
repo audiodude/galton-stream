@@ -10,18 +10,23 @@ AUDIO_PIPE="/tmp/audio_pipe"
 S3_BUCKET="${S3_MUSIC_BUCKET:?ERROR: S3_MUSIC_BUCKET environment variable not set}"
 YOUTUBE_STREAM_KEY="${YOUTUBE_STREAM_KEY:-test}"
 
-# Active window — galton-stream only runs the Godot/ffmpeg/chat/music
-# stack between these hours in America/Los_Angeles. Outside the window
-# start.sh sleeps and no broadcast exists: galton-monitor creates the
-# day's YouTube broadcast at window open and tears it down (transitions
-# to complete, becomes a private VOD) at window close.
-ACTIVE_START_HOUR=12
-ACTIVE_END_HOUR=18
+# Operational window (America/Los_Angeles) — galton-stream runs the
+# Godot/ffmpeg/chat/music stack for the full operational window. The
+# consumer window (12:00-18:00 PT) lives inside this, bracketed by 15 min
+# of warmup and 5 min of cooldown so the YouTube broadcast is live by
+# 12:00 sharp and so 18:00 viewers don't get cut off mid-frame.
+# Values below must match OPERATIONAL_START / OPERATIONAL_END in
+# monitor/monitor.py.
+OPERATIONAL_START_HM=1145
+OPERATIONAL_END_HM=1805
 
-in_active_window() {
-    local h
-    h=$(TZ=America/Los_Angeles date +%-H)
-    [ "$h" -ge "$ACTIVE_START_HOUR" ] && [ "$h" -lt "$ACTIVE_END_HOUR" ]
+in_operational_window() {
+    local hm
+    hm=$(TZ=America/Los_Angeles date +%H%M)
+    # $((10#$hm)) forces base-10 parsing so leading zeros (e.g. "0945")
+    # don't get interpreted as octal.
+    local h=$((10#$hm))
+    [ "$h" -ge "$OPERATIONAL_START_HM" ] && [ "$h" -lt "$OPERATIONAL_END_HM" ]
 }
 
 # Sync music from S3 if the folder is empty (do this even outside the
@@ -35,13 +40,17 @@ else
     echo "Music already present: $(ls $MUSIC_DIR/*.mp3 | wc -l) tracks"
 fi
 
-# Wait until we're inside the active window.
-while ! in_active_window; do
+# Wait until we're inside the operational window. Once inside, monitor
+# will create the day's broadcast within ~1 poll (~30s), bind the stream,
+# and bounce us; the broadcast goes live well before the 12:00 PT consumer
+# window opens. Check every 15s so the cold-start boot happens close to
+# OPERATIONAL_START rather than drifting up to 60s late.
+while ! in_operational_window; do
     now=$(TZ=America/Los_Angeles date '+%H:%M %Z')
-    echo "Outside active window (${ACTIVE_START_HOUR}:00-${ACTIVE_END_HOUR}:00 PT), now $now; sleeping 60s..."
-    sleep 60
+    echo "Outside operational window (${OPERATIONAL_START_HM}-${OPERATIONAL_END_HM} PT), now $now; sleeping 15s..."
+    sleep 15
 done
-echo "Inside active window, starting stream components..."
+echo "Inside operational window, starting stream components..."
 
 # Clean up stale X lock from previous crash
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
@@ -153,7 +162,7 @@ HEALTH_PID=$!
 trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null; exit" SIGTERM SIGINT
 
 while kill -0 $GODOT_PID 2>/dev/null && kill -0 $FFMPEG_PID 2>/dev/null && kill -0 $MUSIC_PID 2>/dev/null; do
-    if ! in_active_window; then
+    if ! in_operational_window; then
         echo "Active window closed, tearing down stream components..."
         break
     fi
