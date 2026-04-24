@@ -310,6 +310,10 @@ def create_new_broadcast(old_broadcast):
             "enableAutoStart": True,
             "enableAutoStop": False,
             "latencyPreference": "ultraLow",
+            # DVR scrubber is distracting for a radio-style stream and
+            # interacts badly with ultraLow latency (player can open at a
+            # rewound position instead of the live edge).
+            "enableDvr": False,
         },
     }
 
@@ -531,6 +535,12 @@ def reconcile_broadcast():
             return
         if stream_id:
             bind_stream_to_broadcast(new_id, stream_id)
+            # YouTube's enableAutoStart only fires when a stream goes
+            # inactive -> active with a broadcast already bound. If ffmpeg
+            # is already pushing (stream already active) at bind time, the
+            # broadcast will sit in `ready` forever. Bounce ffmpeg so the
+            # stream reactivates with our new broadcast bound and auto-starts.
+            restart_ffmpeg()
         else:
             log("No stream bound on previous broadcast; ffmpeg will auto-bind")
         send_telegram(
