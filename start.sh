@@ -161,9 +161,11 @@ HEALTH_PID=$!
 # If any process dies, kill the others and exit
 trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null; exit" SIGTERM SIGINT
 
+WINDOW_CLOSED=false
 while kill -0 $GODOT_PID 2>/dev/null && kill -0 $FFMPEG_PID 2>/dev/null && kill -0 $MUSIC_PID 2>/dev/null; do
     if ! in_operational_window; then
         echo "Active window closed, tearing down stream components..."
+        WINDOW_CLOSED=true
         break
     fi
     sleep 5
@@ -171,4 +173,8 @@ done
 
 echo "Shutting down..."
 kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null
+
+if [ "$WINDOW_CLOSED" = true ]; then
+    exit 0
+fi
 exit 1
