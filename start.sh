@@ -40,141 +40,145 @@ else
     echo "Music already present: $(ls $MUSIC_DIR/*.mp3 | wc -l) tracks"
 fi
 
-# Wait until we're inside the operational window. Once inside, monitor
-# will create the day's broadcast within ~1 poll (~30s), bind the stream,
-# and bounce us; the broadcast goes live well before the 12:00 PT consumer
-# window opens. Check every 15s so the cold-start boot happens close to
-# OPERATIONAL_START rather than drifting up to 60s late.
-while ! in_operational_window; do
-    now=$(TZ=America/Los_Angeles date '+%H:%M %Z')
-    echo "Outside operational window (${OPERATIONAL_START_HM}-${OPERATIONAL_END_HM} PT), now $now; sleeping 15s..."
-    sleep 15
-done
-echo "Inside operational window, starting stream components..."
-
-# Clean up stale X lock from previous crash
-rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
-
-# Start virtual framebuffer with no cursor
-Xvfb :99 -screen 0 ${RESOLUTION}x24 -nocursor &
-export DISPLAY=:99
-
-# Wait for Xvfb to be ready
-sleep 2
-
-# Set root window to black and hide cursor
-xsetroot -solid black
-unclutter -idle 0 -root &
-
-# Start music player (decodes audio to pipe, writes playlist state)
-MUSIC_DIR="$MUSIC_DIR" python3 /app/scripts/music_player.py &
-MUSIC_PID=$!
-
-# Start title writer (reads playlist state, writes song title on wall-clock schedule)
-python3 /app/scripts/title_writer.py &
-TITLE_PID=$!
-echo $TITLE_PID > /tmp/title_writer.pid
-
-# Start YouTube chat poller (writes events to /tmp/chat_events.json for Godot)
-python3 /app/scripts/chat_poller.py &
-CHAT_PID=$!
-echo $CHAT_PID > /tmp/chat_poller.pid
-
-# Wait for pipe to be created
-sleep 2
-
-# CPU pinning: split cores between Godot (physics/render) and ffmpeg (encode)
-# so the encoder can't be starved by a Godot spike. Falls back to no pinning
-# if fewer than 4 cores are visible.
-NCORES=$(nproc)
-if [ "$NCORES" -ge 4 ]; then
-    HALF=$((NCORES / 2))
-    GODOT_CPUS="0-$((HALF - 1))"
-    FFMPEG_CPUS="$HALF-$((NCORES - 1))"
-    # libx264 warns against >16 threads; cap here even if more cores are pinned.
-    FFMPEG_THREADS=$((NCORES - HALF))
-    if [ "$FFMPEG_THREADS" -gt 16 ]; then
-        FFMPEG_THREADS=16
-    fi
-    GODOT_TASKSET="taskset -c $GODOT_CPUS"
-    FFMPEG_TASKSET="taskset -c $FFMPEG_CPUS"
-    echo "CPU pinning: Godot -> $GODOT_CPUS, ffmpeg -> $FFMPEG_CPUS ($FFMPEG_THREADS threads)"
-else
-    GODOT_TASKSET=""
-    FFMPEG_TASKSET=""
-    FFMPEG_THREADS=0  # libx264 auto
-    echo "CPU pinning: skipped (only $NCORES cores visible)"
-fi
-
-# Start Godot
-$GODOT_TASKSET godot --path /app --main-scene main.tscn --rendering-driver opengl3 &
-GODOT_PID=$!
-
-# Wait for Godot to initialize and start rendering
-sleep 5
-
-# Start FFmpeg in a retry loop — if YouTube's RTMP drops, restart FFmpeg
-# instead of tearing down the whole container. music_player already handles
-# the reader-died case by reopening the pipe.
-(
-    while true; do
-        $FFMPEG_TASKSET ffmpeg \
-            -loglevel warning \
-            -stats_period 5 \
-            -thread_queue_size 256 \
-            -f x11grab \
-            -video_size ${RESOLUTION} \
-            -framerate ${FPS} \
-            -i :99 \
-            -thread_queue_size 8 \
-            -re \
-            -f s16le \
-            -ar 44100 \
-            -ac 2 \
-            -i "$AUDIO_PIPE" \
-            -vf scale=${OUTPUT_RES} \
-            -af volume=-7dB \
-            -c:v libx264 \
-            -preset ultrafast \
-            -tune zerolatency \
-            -threads ${FFMPEG_THREADS} \
-            -b:v 2500k \
-            -maxrate 2500k \
-            -bufsize 7500k \
-            -pix_fmt yuv420p \
-            -g 60 \
-            -c:a aac \
-            -b:a 128k \
-            -ar 44100 \
-            -f flv \
-            "${YOUTUBE_URL}/${YOUTUBE_STREAM_KEY}" || true
-        echo "FFmpeg exited, restarting in 3s..."
-        sleep 3
+# Main loop: wait for the operational window, stream during it, tear down
+# at the end, then loop back to wait for the next day's window. The
+# container stays alive 24/7 so Railway never sees a crash or a "completed"
+# exit that it refuses to restart.
+while true; do
+    while ! in_operational_window; do
+        now=$(TZ=America/Los_Angeles date '+%H:%M %Z')
+        echo "Outside operational window (${OPERATIONAL_START_HM}-${OPERATIONAL_END_HM} PT), now $now; sleeping 15s..."
+        sleep 15
     done
-) &
-FFMPEG_PID=$!
+    echo "Inside operational window, starting stream components..."
 
-# Start health server (replaces watchdog.sh — exposes /health for galton-monitor)
-python3 /app/scripts/health_server.py &
-HEALTH_PID=$!
+    # Clean up stale X lock from previous run
+    rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
-# If any process dies, kill the others and exit
-trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null; exit" SIGTERM SIGINT
+    # Start virtual framebuffer with no cursor
+    Xvfb :99 -screen 0 ${RESOLUTION}x24 -nocursor &
+    export DISPLAY=:99
 
-WINDOW_CLOSED=false
-while kill -0 $GODOT_PID 2>/dev/null && kill -0 $FFMPEG_PID 2>/dev/null && kill -0 $MUSIC_PID 2>/dev/null; do
-    if ! in_operational_window; then
-        echo "Active window closed, tearing down stream components..."
-        WINDOW_CLOSED=true
-        break
+    # Wait for Xvfb to be ready
+    sleep 2
+
+    # Set root window to black and hide cursor
+    xsetroot -solid black
+    unclutter -idle 0 -root &
+
+    # Start music player (decodes audio to pipe, writes playlist state)
+    MUSIC_DIR="$MUSIC_DIR" python3 /app/scripts/music_player.py &
+    MUSIC_PID=$!
+
+    # Start title writer (reads playlist state, writes song title on wall-clock schedule)
+    python3 /app/scripts/title_writer.py &
+    TITLE_PID=$!
+    echo $TITLE_PID > /tmp/title_writer.pid
+
+    # Start YouTube chat poller (writes events to /tmp/chat_events.json for Godot)
+    python3 /app/scripts/chat_poller.py &
+    CHAT_PID=$!
+    echo $CHAT_PID > /tmp/chat_poller.pid
+
+    # Wait for pipe to be created
+    sleep 2
+
+    # CPU pinning: split cores between Godot (physics/render) and ffmpeg (encode)
+    # so the encoder can't be starved by a Godot spike. Falls back to no pinning
+    # if fewer than 4 cores are visible.
+    NCORES=$(nproc)
+    if [ "$NCORES" -ge 4 ]; then
+        HALF=$((NCORES / 2))
+        GODOT_CPUS="0-$((HALF - 1))"
+        FFMPEG_CPUS="$HALF-$((NCORES - 1))"
+        FFMPEG_THREADS=$((NCORES - HALF))
+        if [ "$FFMPEG_THREADS" -gt 16 ]; then
+            FFMPEG_THREADS=16
+        fi
+        GODOT_TASKSET="taskset -c $GODOT_CPUS"
+        FFMPEG_TASKSET="taskset -c $FFMPEG_CPUS"
+        echo "CPU pinning: Godot -> $GODOT_CPUS, ffmpeg -> $FFMPEG_CPUS ($FFMPEG_THREADS threads)"
+    else
+        GODOT_TASKSET=""
+        FFMPEG_TASKSET=""
+        FFMPEG_THREADS=0  # libx264 auto
+        echo "CPU pinning: skipped (only $NCORES cores visible)"
     fi
+
+    # Start Godot
+    $GODOT_TASKSET godot --path /app --main-scene main.tscn --rendering-driver opengl3 &
+    GODOT_PID=$!
+
+    # Wait for Godot to initialize and start rendering
     sleep 5
+
+    # Start FFmpeg in a retry loop — if YouTube's RTMP drops, restart FFmpeg
+    # instead of tearing down the whole container. music_player already handles
+    # the reader-died case by reopening the pipe.
+    (
+        while true; do
+            $FFMPEG_TASKSET ffmpeg \
+                -loglevel warning \
+                -stats_period 5 \
+                -thread_queue_size 256 \
+                -f x11grab \
+                -video_size ${RESOLUTION} \
+                -framerate ${FPS} \
+                -i :99 \
+                -thread_queue_size 8 \
+                -re \
+                -f s16le \
+                -ar 44100 \
+                -ac 2 \
+                -i "$AUDIO_PIPE" \
+                -vf scale=${OUTPUT_RES} \
+                -af volume=-7dB \
+                -c:v libx264 \
+                -preset ultrafast \
+                -tune zerolatency \
+                -threads ${FFMPEG_THREADS} \
+                -b:v 2500k \
+                -maxrate 2500k \
+                -bufsize 7500k \
+                -pix_fmt yuv420p \
+                -g 60 \
+                -c:a aac \
+                -b:a 128k \
+                -ar 44100 \
+                -f flv \
+                "${YOUTUBE_URL}/${YOUTUBE_STREAM_KEY}" || true
+            echo "FFmpeg exited, restarting in 3s..."
+            sleep 3
+        done
+    ) &
+    FFMPEG_PID=$!
+
+    # Start health server (replaces watchdog.sh — exposes /health for galton-monitor)
+    python3 /app/scripts/health_server.py &
+    HEALTH_PID=$!
+
+    trap "kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null; exit" SIGTERM SIGINT
+
+    PROCESS_DIED=false
+    while kill -0 $GODOT_PID 2>/dev/null && kill -0 $FFMPEG_PID 2>/dev/null && kill -0 $MUSIC_PID 2>/dev/null; do
+        if ! in_operational_window; then
+            echo "Active window closed, tearing down stream components..."
+            break
+        fi
+        sleep 5
+    done
+
+    # If the loop exited because a process died (not window close), flag it
+    if in_operational_window; then
+        PROCESS_DIED=true
+    fi
+
+    echo "Shutting down stream components..."
+    kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null
+    wait $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null
+
+    if [ "$PROCESS_DIED" = true ]; then
+        echo "Process died during operational window, restarting in 10s..."
+        sleep 10
+    fi
 done
-
-echo "Shutting down..."
-kill $GODOT_PID $FFMPEG_PID $MUSIC_PID $TITLE_PID $CHAT_PID $HEALTH_PID 2>/dev/null
-
-if [ "$WINDOW_CLOSED" = true ]; then
-    exit 0
-fi
-exit 1
