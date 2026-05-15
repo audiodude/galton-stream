@@ -21,6 +21,7 @@ OPERATIONAL_START_HM=1145
 OPERATIONAL_END_HM=1805
 
 in_operational_window() {
+    [ "${FORCE_ACTIVE:-}" = "1" ] && return 0
     local hm
     hm=$(TZ=America/Los_Angeles date +%H%M)
     # $((10#$hm)) forces base-10 parsing so leading zeros (e.g. "0945")

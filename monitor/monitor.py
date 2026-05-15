@@ -93,12 +93,15 @@ def _in_window(start_hm, end_hm, now=None):
     return start_hm <= hm < end_hm
 
 
+FORCE_ACTIVE = os.environ.get("FORCE_ACTIVE", "") == "1"
+
+
 def in_operational_window(now=None):
-    return _in_window(OPERATIONAL_START, OPERATIONAL_END, now)
+    return FORCE_ACTIVE or _in_window(OPERATIONAL_START, OPERATIONAL_END, now)
 
 
 def in_consumer_window(now=None):
-    return _in_window(CONSUMER_START, CONSUMER_END, now)
+    return FORCE_ACTIVE or _in_window(CONSUMER_START, CONSUMER_END, now)
 
 
 # Back-compat alias — existing callers that ask "is galton-stream supposed to
