@@ -5,7 +5,8 @@ Polls galton-stream's /health endpoint over Railway internal networking.
 Recovery escalation:
   1 fail (120s)  → start fallback stream
   5 fails (600s) → POST /restart-all on galton-stream (container restart)
-  6 fails (720s) → redeploy galton-stream via Railway API
+  6 fails (720s) → restart galton-stream's Railway deployment (no rebuild;
+                   clears a frozen/hung container), falling back to a full redeploy
   7 fails (840s) → alert that all recovery failed
 
 Checks YouTube broadcast status via OAuth on every poll and state transition.
@@ -798,6 +799,69 @@ def redeploy_railway():
         return False
 
 
+def _railway_graphql(query, variables):
+    """POST a GraphQL request to the Railway API. Returns the parsed response
+    dict, or None on transport error or GraphQL errors."""
+    if not RAILWAY_API_TOKEN:
+        log("Railway API call skipped: RAILWAY_API_TOKEN not set")
+        return None
+    payload = json.dumps({"query": query, "variables": variables}).encode()
+    try:
+        req = urllib.request.Request(
+            "https://backboard.railway.com/graphql/v2",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {RAILWAY_API_TOKEN}",
+                "Content-Type": "application/json",
+            },
+        )
+        resp = urllib.request.urlopen(req, timeout=15)
+        result = json.loads(resp.read().decode())
+        if result.get("errors"):
+            log(f"Railway API errors: {result['errors']}")
+            return None
+        return result
+    except Exception as e:
+        log(f"Railway API request failed: {e}")
+        return None
+
+
+def galton_stream_deployment_id():
+    """Return galton-stream's latest deployment id, or None."""
+    result = _railway_graphql(
+        "query($s: String!, $e: String!) {"
+        "  deployments(input: {serviceId: $s, environmentId: $e}, first: 1) {"
+        "    edges { node { id } } } }",
+        {"s": GALTON_STREAM_SERVICE_ID, "e": GALTON_STREAM_ENVIRONMENT_ID},
+    )
+    try:
+        return result["data"]["deployments"]["edges"][0]["node"]["id"]
+    except (TypeError, KeyError, IndexError):
+        return None
+
+
+def restart_railway():
+    """Restart galton-stream's current Railway deployment. A restart clears a
+    frozen/hung container WITHOUT a rebuild (faster and more reliable than a
+    full redeploy). Falls back to a full redeploy if the restart can't be issued."""
+    if not RAILWAY_API_TOKEN or not GALTON_STREAM_SERVICE_ID:
+        log("Cannot restart: RAILWAY_API_TOKEN or service id not set")
+        return False
+    deployment_id = galton_stream_deployment_id()
+    if deployment_id:
+        result = _railway_graphql(
+            "mutation($id: String!) { deploymentRestart(id: $id) }",
+            {"id": deployment_id},
+        )
+        if result and result.get("data", {}).get("deploymentRestart"):
+            log(f"Railway deployment {deployment_id} restarted")
+            return True
+        log("deploymentRestart failed; falling back to full redeploy")
+    else:
+        log("Could not resolve galton-stream deployment id; falling back to redeploy")
+    return redeploy_railway()
+
+
 def set_state(new_state, reason):
     global current_state
     if new_state != current_state:
@@ -882,12 +946,15 @@ def main():
                 set_state("RESTARTED_ALL", "5 consecutive failures (600s)")
 
             elif consecutive_failures == 6:
-                # 720s → redeploy via Railway API
-                log("6 failures, redeploying via Railway...")
-                if redeploy_railway():
-                    set_state("RESTARTED_RAILWAY", "6 consecutive failures, Railway redeploy")
+                # 720s → restart galton-stream's Railway deployment. A restart
+                # (no rebuild) clears a frozen/hung container faster and more
+                # reliably than a full redeploy; restart_railway falls back to a
+                # full redeploy if the restart can't be issued.
+                log("6 failures, restarting galton-stream's Railway deployment...")
+                if restart_railway():
+                    set_state("RESTARTED_RAILWAY", "6 consecutive failures, Railway restart")
                 else:
-                    set_state("RESTARTED_RAILWAY", "6 failures, Railway redeploy FAILED")
+                    set_state("RESTARTED_RAILWAY", "6 failures, Railway restart FAILED")
 
             elif consecutive_failures == 7:
                 # 840s → all recovery exhausted
