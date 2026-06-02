@@ -130,6 +130,7 @@ def _seconds_until_next_boundary():
 # State
 fallback_proc = None
 current_state = "STARTING"  # NORMAL, FALLBACK_ACTIVE, RESTARTED_ALL, RESTARTED_RAILWAY, DEAD
+incident_active = False  # True once we've alerted on a real failure, until recovery
 consecutive_failures = 0
 chat_poller_dead_count = 0
 title_writer_dead_count = 0
@@ -607,9 +608,7 @@ def reconcile_broadcast():
             restart_ffmpeg()
         else:
             log("No stream bound on previous broadcast; ffmpeg will auto-bind")
-        send_telegram(
-            f"{PREFIX} New broadcast created: https://www.youtube.com/live/{new_video_id}"
-        )
+        log(f"New broadcast created: https://www.youtube.com/live/{new_video_id}")
         return
 
     # Outside operational window: only tear down broadcasts that are
@@ -623,18 +622,38 @@ def reconcile_broadcast():
         bid = b.get("id")
         transition_broadcast(bid, "complete")
         set_broadcast_privacy(bid, "private")
-        send_telegram(
-            f"{PREFIX} Broadcast ended: https://www.youtube.com/live/{bid}"
-        )
+        log(f"Broadcast ended: https://www.youtube.com/live/{bid}")
     if radio_current_video_id() is not None:
         set_radio_offline()
 
 
 def on_state_transition(old_state, new_state, reason):
-    """Called on every state transition."""
+    """Log every transition; only Telegram-alert on trouble and recovery from it.
+
+    Routine daily churn — entering the operational window, the window-open
+    fallback card clearing back to NORMAL, the scheduled window close — is
+    logged but never paged. We only ping when something actually goes wrong
+    (an unexpected drop into fallback or a recovery escalation) and again when
+    that incident clears.
+    """
+    global incident_active
     msg = f"{PREFIX} State: {old_state} -> {new_state}. Reason: {reason}"
-    send_telegram(msg)
     log(msg)
+
+    is_problem = new_state in ("RESTARTED_ALL", "RESTARTED_RAILWAY", "DEAD") or (
+        new_state == "FALLBACK_ACTIVE" and reason != "entering operational window"
+    )
+    if is_problem:
+        incident_active = True
+        send_telegram(msg)
+    elif new_state == "NORMAL":
+        if incident_active:  # recovered from a real failure — worth knowing
+            send_telegram(msg)
+        incident_active = False
+    elif new_state == "SCHEDULED_OFF":
+        incident_active = False
+    # Routine quiet transitions (entering operational window, startup) fall
+    # through with no alert.
 
 
 def poll_health():
@@ -876,7 +895,7 @@ def main():
     log(f"YouTube OAuth: client_id={'set' if YOUTUBE_CLIENT_ID else 'MISSING'}, "
         f"client_secret={'set' if YOUTUBE_CLIENT_SECRET else 'MISSING'}, "
         f"refresh_token={'set' if YOUTUBE_REFRESH_TOKEN else 'MISSING'}")
-    send_telegram(f"{PREFIX} Monitor service started.")
+    log("Monitor service started.")
 
     first_iteration = True
     while True:

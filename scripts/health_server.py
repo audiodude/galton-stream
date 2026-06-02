@@ -146,7 +146,7 @@ def watchdog_loop():
     prev_bytes = None
     alerted = False
 
-    send_telegram(f"{PREFIX} Watchdog started, monitoring stream.")
+    print(f"{PREFIX} Watchdog started, monitoring stream.", file=sys.stderr, flush=True)
 
     while True:
         time.sleep(CHECK_INTERVAL)
