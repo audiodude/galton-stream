@@ -57,6 +57,14 @@ echo "[playout] CATALOG_DIR=$CATALOG_DIR"
 echo "[playout] AUDIO_PIPE=$AUDIO_PIPE  VIDEO_PIPE=$VIDEO_PIPE"
 echo "[playout] DWELL_SEC=$DWELL_SEC  OUTPUT=$OUTPUT"
 
+# Ensure SONG_FILE exists so ffmpeg's drawtext filter can initialize even if
+# title_writer.py hasn't written it yet (e.g. on first startup before
+# music_player decodes a song and writes the state file).
+if [ ! -f "$SONG_FILE" ]; then
+    echo "" > "$SONG_FILE"
+    echo "[playout] created empty $SONG_FILE"
+fi
+
 # Start video_player in the background. It will create VIDEO_PIPE itself and
 # block internally until ffmpeg opens the read end — that ordering is safe
 # because mkfifo happens before the write-end open.
