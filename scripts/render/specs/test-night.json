@@ -1,0 +1,37 @@
+[
+  {
+    "model": "supernova_orbit",
+    "preset": "odyssey",
+    "seed": 101,
+    "duration_sec": 240,
+    "kind": "piece"
+  },
+  {
+    "model": "fluid_swirl",
+    "preset": "maelstrom",
+    "seed": 102,
+    "duration_sec": 240,
+    "kind": "piece"
+  },
+  {
+    "model": "matter_cycle",
+    "preset": "grinder",
+    "seed": 103,
+    "duration_sec": 240,
+    "kind": "piece"
+  },
+  {
+    "model": "chromatic_cascade",
+    "preset": "paintstorm",
+    "seed": 104,
+    "duration_sec": 240,
+    "kind": "piece"
+  },
+  {
+    "model": "radial_burst",
+    "preset": "cataclysm",
+    "seed": 105,
+    "duration_sec": 12,
+    "kind": "ident"
+  }
+]

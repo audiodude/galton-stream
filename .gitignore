@@ -12,3 +12,8 @@ soundtrack/
 # Python
 __pycache__/
 notes/
+
+# Render outputs
+catalog/
+music_local/
+playout_test.flv
