@@ -31,6 +31,12 @@ FPS          = 60
 SIZE         = "1280x720"
 
 CHUNK = 65536
+# One raw yuv420p frame. The pipe must ONLY ever contain whole frames: the
+# master ffmpeg's rawvideo demuxer reads fixed-size frames, so a single
+# partial frame (e.g. from killing a decoder mid-frame at a boundary cut)
+# permanently shifts its read offset and scrambles everything after it.
+_W, _H = (int(v) for v in SIZE.split("x"))
+FRAME_BYTES = _W * _H * 3 // 2
 
 
 def load_catalog():
@@ -75,18 +81,35 @@ def spawn_decoder(filepath):
     )
 
 
-def stream_to_pipe(proc, pipe_fd, stop_event):
-    """Copy proc stdout → pipe_fd in chunks until EOF, proc dies, or stop_event set.
+def _write_all(pipe_fd, data):
+    """os.write until all of data is written (large writes to pipes can be partial)."""
+    view = memoryview(data)
+    while view:
+        n = os.write(pipe_fd, view)
+        view = view[n:]
 
-    Returns 'eof' if the decoder ran to natural EOF, 'interrupted' if stopped,
-    or 'pipe_lost' if a write to the pipe fails (reader died).
+
+def stream_to_pipe(proc, pipe_fd, stop_event):
+    """Copy proc stdout → pipe_fd in WHOLE FRAMES until EOF, proc dies, or stop set.
+
+    stop_event is honored only at frame boundaries, and a trailing partial
+    frame at EOF/kill is dropped, so the pipe always stays frame-aligned.
+    Returns 'eof' on natural end, 'interrupted' if stopped, 'pipe_lost' if a
+    write fails (reader died).
     """
+    buf = bytearray()
     while not stop_event.is_set():
         try:
             chunk = proc.stdout.read(CHUNK)
             if not chunk:
-                return "eof"   # natural EOF
-            os.write(pipe_fd, chunk)
+                # EOF: drop any partial trailing frame rather than misalign the pipe.
+                if buf:
+                    print(f"[video] dropping {len(buf)} partial-frame bytes at EOF", flush=True)
+                return "eof"
+            buf.extend(chunk)
+            while len(buf) >= FRAME_BYTES:
+                _write_all(pipe_fd, buf[:FRAME_BYTES])
+                del buf[:FRAME_BYTES]
         except OSError as e:
             print(f"[video] pipe write error: {e}", flush=True)
             return "pipe_lost"
