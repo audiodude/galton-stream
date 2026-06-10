@@ -42,7 +42,9 @@ ENVIRONMENT:
   VIDEO_PIPE          video input pipe                 (default: /tmp/video_pipe)
   SONG_FILE           song-boundary + overlay source   (default: /tmp/current_song.txt)
   DWELL_SEC           min piece play time before a cut (default: 900; use 90 for tests)
-  OUTPUT              .flv path or rtmp:// URL         (default: ./playout_test.flv)
+  OUTPUT              .flv path, .mp4 path, or rtmp:// URL (default: ./playout_test.flv)
+                      .mp4 records to a kill-safe companion .flv, then losslessly
+                      remuxes to the .mp4 on shutdown
   YOUTUBE_STREAM_KEY  if set, OUTPUT defaults to YouTube RTMP
   YOUTUBE_URL         RTMP base (default: rtmp://a.rtmp.youtube.com/live2)
 
@@ -73,6 +75,16 @@ else
     OUTPUT="${OUTPUT:-./playout_test.flv}"
 fi
 
+# An .mp4 OUTPUT can't be written directly: mp4 needs its index written at
+# clean shutdown, and playout gets killed by design — a killed mp4 is garbage.
+# So record to a companion .flv (kill-safe) and losslessly remux on exit.
+MP4_OUTPUT=""
+if [[ "$OUTPUT" == *.mp4 ]]; then
+    MP4_OUTPUT="$OUTPUT"
+    OUTPUT="${OUTPUT%.mp4}.flv"
+    echo "[playout] mp4 requested: recording to $OUTPUT, will remux to $MP4_OUTPUT on exit"
+fi
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 VIDEO_PLAYER_PID=""
@@ -81,9 +93,21 @@ FFMPEG_PID=""
 cleanup() {
     echo "[playout] shutting down..."
     [ -n "$VIDEO_PLAYER_PID" ] && kill "$VIDEO_PLAYER_PID" 2>/dev/null || true
-    [ -n "$FFMPEG_PID" ]       && kill "$FFMPEG_PID"       2>/dev/null || true
+    if [ -n "$FFMPEG_PID" ]; then
+        kill "$FFMPEG_PID" 2>/dev/null || true
+        wait "$FFMPEG_PID" 2>/dev/null || true
+    fi
     # Remove pipes so the next run starts clean.
     rm -f "$VIDEO_PIPE"
+    if [ -n "$MP4_OUTPUT" ] && [ -s "$OUTPUT" ]; then
+        echo "[playout] remuxing $OUTPUT -> $MP4_OUTPUT"
+        if ffmpeg -y -loglevel error -i "$OUTPUT" -c copy "$MP4_OUTPUT"; then
+            rm -f "$OUTPUT"
+            echo "[playout] wrote $MP4_OUTPUT"
+        else
+            echo "[playout] remux failed — recording kept at $OUTPUT" >&2
+        fi
+    fi
     echo "[playout] done"
 }
 trap cleanup EXIT INT TERM
