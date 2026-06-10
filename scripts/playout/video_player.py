@@ -78,18 +78,19 @@ def spawn_decoder(filepath):
 def stream_to_pipe(proc, pipe_fd, stop_event):
     """Copy proc stdout → pipe_fd in chunks until EOF, proc dies, or stop_event set.
 
-    Returns True if the decoder ran to natural EOF, False if interrupted.
+    Returns 'eof' if the decoder ran to natural EOF, 'interrupted' if stopped,
+    or 'pipe_lost' if a write to the pipe fails (reader died).
     """
     while not stop_event.is_set():
-        chunk = proc.stdout.read(CHUNK)
-        if not chunk:
-            return True   # natural EOF
         try:
+            chunk = proc.stdout.read(CHUNK)
+            if not chunk:
+                return "eof"   # natural EOF
             os.write(pipe_fd, chunk)
         except OSError as e:
             print(f"[video] pipe write error: {e}", flush=True)
-            return False
-    return False
+            return "pipe_lost"
+    return "interrupted"
 
 
 def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC):
@@ -97,7 +98,8 @@ def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC):
 
     If watch_song=True, monitor SONG_FILE; return ('boundary', elapsed) when
     content changes AND elapsed >= dwell_sec, interrupting playback.
-    Returns ('eof', elapsed) on natural file end, ('boundary', elapsed) on cut.
+    Returns ('eof', elapsed) on natural file end, ('boundary', elapsed) on cut,
+    or ('pipe_lost', elapsed) when the pipe write fails (reader died).
     """
     filepath = entry["file"]
     eid      = entry["id"]
@@ -120,26 +122,43 @@ def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC):
     last_song = read_song_file() if watch_song else None
     reason = "eof"
 
-    while t.is_alive():
-        time.sleep(1.0)
-        elapsed = time.monotonic() - start_mono
+    try:
+        while t.is_alive():
+            time.sleep(1.0)
+            elapsed = time.monotonic() - start_mono
 
-        if watch_song:
-            current_song = read_song_file()
-            if current_song != last_song and elapsed >= dwell_sec:
-                reason = "boundary"
+            # Check if the streaming thread detected a pipe failure.
+            if stream_result[0] == "pipe_lost":
+                reason = "pipe_lost"
                 stop_event.set()
                 proc.terminate()
                 t.join(timeout=5)
                 break
-            # Update last_song even if dwell not reached, so the *next*
-            # eligible check catches the boundary that's already been crossed.
-            if current_song != last_song:
-                last_song = current_song
 
-    if reason == "eof":
-        t.join()
-        proc.wait()
+            if watch_song:
+                current_song = read_song_file()
+                if current_song != last_song and elapsed >= dwell_sec:
+                    reason = "boundary"
+                    stop_event.set()
+                    proc.terminate()
+                    t.join(timeout=5)
+                    break
+                # Update last_song even if dwell not reached, so the *next*
+                # eligible check catches the boundary that's already been crossed.
+                if current_song != last_song:
+                    last_song = current_song
+
+        # If the thread finished naturally, check for pipe_lost set at EOF path.
+        if reason == "eof" and stream_result[0] == "pipe_lost":
+            reason = "pipe_lost"
+    finally:
+        stop_event.set()
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
     elapsed = time.monotonic() - start_mono
     print(f"[video] END id={eid} reason={reason} elapsed={elapsed:.1f}s", flush=True)
@@ -209,11 +228,27 @@ def main():
 
         entry  = pieces[order[idx]]
         reason, _ = play_entry(entry, pipe_fd, watch_song=True, dwell_sec=DWELL_SEC)
-        last_id   = entry["id"]
-        idx      += 1
 
         if _shutdown.is_set():
             break
+
+        if reason == "pipe_lost":
+            # Reader (master ffmpeg) died. close the broken fd, wait for a new reader.
+            print(f"[video] pipe_lost — closing fd and waiting for new reader on "
+                  f"{VIDEO_PIPE} ...", flush=True)
+            try:
+                os.close(pipe_fd)
+            except OSError:
+                pass
+            # Block until the new reader opens the pipe (start.sh restarts ffmpeg).
+            pipe_fd = os.open(VIDEO_PIPE, os.O_WRONLY)
+            print("[video] pipe reopened, resuming playback (replaying current piece)",
+                  flush=True)
+            # Do NOT advance idx — replay the same piece from the beginning.
+            continue
+
+        last_id = entry["id"]
+        idx    += 1
 
         if reason == "boundary":
             # Song boundary: play one ident fully, then continue piece loop.
