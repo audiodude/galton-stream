@@ -24,6 +24,41 @@
 
 set -euo pipefail
 
+usage() {
+    cat <<'EOF'
+Usage: playout.sh
+       (no arguments — configured entirely via environment variables)
+
+Streams the pre-rendered video catalog muxed with the live music pipe to a
+local FLV file or YouTube RTMP, cutting between pieces at song boundaries.
+
+PREREQUISITES (must already be running):
+  music_player.py   writing raw PCM to $AUDIO_PIPE
+  title_writer.py   keeping $SONG_FILE updated with the current song name
+
+ENVIRONMENT:
+  CATALOG_DIR         dir with mp4s + catalog.json     (default: ./catalog)
+  AUDIO_PIPE          music input pipe                 (default: /tmp/audio_pipe)
+  VIDEO_PIPE          video input pipe                 (default: /tmp/video_pipe)
+  SONG_FILE           song-boundary + overlay source   (default: /tmp/current_song.txt)
+  DWELL_SEC           min piece play time before a cut (default: 900; use 90 for tests)
+  OUTPUT              .flv path or rtmp:// URL         (default: ./playout_test.flv)
+  YOUTUBE_STREAM_KEY  if set, OUTPUT defaults to YouTube RTMP
+  YOUTUBE_URL         RTMP base (default: rtmp://a.rtmp.youtube.com/live2)
+
+EXAMPLES:
+  DWELL_SEC=90 CATALOG_DIR=./catalog scripts/playout/playout.sh
+  YOUTUBE_STREAM_KEY=xxxx-xxxx scripts/playout/playout.sh
+EOF
+}
+
+if [ "$#" -gt 0 ]; then
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        *) echo "playout.sh takes no arguments (got: $*)" >&2; echo >&2; usage >&2; exit 1 ;;
+    esac
+fi
+
 CATALOG_DIR="${CATALOG_DIR:-./catalog}"
 AUDIO_PIPE="${AUDIO_PIPE:-/tmp/audio_pipe}"
 VIDEO_PIPE="${VIDEO_PIPE:-/tmp/video_pipe}"
