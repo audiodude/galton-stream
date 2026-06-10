@@ -70,16 +70,23 @@ xvfb-run -a -s "-screen 0 1280x720x24" \
 ELAPSED=$(( $(date +%s) - START_TIME ))
 echo "[render_piece] godot done in ${ELAPSED}s, encoding mp4..."
 
+# Encode to a temp name and mv into place so a killed run can never leave a
+# half-written mp4 that the skip-if-exists check would mistake for complete.
 ffmpeg -y -loglevel error \
     -i "$TMP_AVI" \
     -c:v libx264 -crf 18 -pix_fmt yuv420p \
     -r 60 -an \
-    "$OUT_MP4"
+    -f mp4 "${OUT_MP4}.tmp"
+mv "${OUT_MP4}.tmp" "$OUT_MP4"
 
 # Write sidecar JSON (duration via ffprobe)
 ACTUAL_DUR="$(ffprobe -v error -select_streams v:0 \
     -show_entries format=duration \
     -of default=noprint_wrappers=1:nokey=1 "$OUT_MP4")"
+if ! [[ "$ACTUAL_DUR" =~ ^[0-9.]+$ ]]; then
+    echo "[render_piece] ERROR: ffprobe returned no duration for $OUT_MP4" >&2
+    exit 1
+fi
 
 RENDERED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 jq -n \

@@ -39,6 +39,10 @@ def main():
             continue
         pieces.append(entry)
 
+    if not pieces:
+        print("[make_manifest] ERROR: no valid sidecars found — refusing to write an empty catalog", file=sys.stderr)
+        sys.exit(1)
+
     catalog = {
         "pieces": pieces,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
