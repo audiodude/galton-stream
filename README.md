@@ -99,6 +99,59 @@ When a new song starts, the title appears at full opacity for 5 seconds, then fa
 
 The S3 bucket path is configured in `start.sh`. Music files are cached on a persistent volume at `/data/mp3` so they only sync once.
 
+## Video catalog: rendering (scripts/render/)
+
+Pre-rendered generative video pieces come from the [vxstory](https://github.com/audiodude/vxstory)
+models, rendered by composable helpers in `scripts/render/` (run on a machine with a
+GPU + the vxstory checkout; `VXSTORY_DIR` defaults to `../vxstory`):
+
+```bash
+# one piece: model, preset, seed, duration, out dir (+ optional --kind ident)
+scripts/render/render_piece.sh supernova_orbit odyssey 101 1200 ./catalog
+# a whole catalog from a committable spec (see scripts/render/specs/)
+scripts/render/render_catalog.sh scripts/render/specs/test-night.json ./catalog
+# push to S3 (mp4s first, manifest last, so the manifest never references missing files)
+scripts/render/upload_catalog.sh ./catalog s3://bucket/catalog/
+```
+
+Each piece renders at 1280×720@60 (via a temporary `override.cfg` in the model's
+project dir — Movie Maker ignores `--resolution`), gets a sidecar JSON, and
+`make_manifest.py` collects sidecars into `catalog.json`:
+`{"pieces": [{id, kind: piece|ident, model, preset, seed, duration_sec, file, rendered_at}]}`.
+Renders are serialized (override.cfg is per-project state), idempotent (existing mp4s
+are skipped; writes are atomic), and ~3× realtime under xvfb on a 3080 Ti.
+
+## Video playout (scripts/playout/)
+
+Mirrors the music architecture: `video_player.py` decodes the current catalog piece to
+raw frames in a named pipe (`/tmp/video_pipe`), and `playout.sh` runs the master ffmpeg
+muxing video pipe + audio pipe + song-title overlay (drawtext, `reload=1`) to FLV — a
+local file by default, RTMP to YouTube when `YOUTUBE_STREAM_KEY` is set. (FLV because
+RTMP *is* FLV-over-TCP, and truncated FLV stays playable.)
+
+Transitions happen at **song boundaries**: `video_player.py` watches
+`/tmp/current_song.txt` at 1 Hz; at the first song change after `DWELL_SEC` (default
+900) it cuts to a random ident, then the next shuffled piece. A piece that ends
+naturally chains straight to the next (no ident). If the master ffmpeg dies/restarts,
+the player reopens the pipe and replays the current piece.
+
+```bash
+# music stack must already be running (audio pipe + current_song.txt)
+DWELL_SEC=900 CATALOG_DIR=./catalog OUTPUT=./playout_test.flv scripts/playout/playout.sh
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `CATALOG_DIR` | `./catalog` | Dir containing mp4s + `catalog.json` |
+| `VIDEO_PIPE` / `AUDIO_PIPE` | `/tmp/video_pipe` / `/tmp/audio_pipe` | Named pipes into the master ffmpeg |
+| `SONG_FILE` | `/tmp/current_song.txt` | Watched for song-boundary detection + drawtext overlay |
+| `DWELL_SEC` | `900` | Minimum piece play time before a boundary can cut it |
+| `OUTPUT` | `./playout_test.flv` | File path, or rtmp URL (auto when `YOUTUBE_STREAM_KEY` set) |
+
+Startup order matters: pipe writers (music player, video player) first, master ffmpeg
+last — pipe opens block until both ends exist. Roadmap (Railway playout service, cloud
+rendering, 50-piece catalog): see `TODO.md`.
+
 ## Deployment
 
 Railway auto-deploys both services from the `release` branch (not `main`). Push to `main` for development, then merge to `release` to deploy.
