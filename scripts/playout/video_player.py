@@ -106,6 +106,7 @@ def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC):
           f"ts={now_str}", flush=True)
 
     proc = spawn_decoder(filepath)
+    _current_decoder_proc[0] = proc  # so the signal handler can kill it
     stop_event = threading.Event()
     start_mono = time.monotonic()
 
