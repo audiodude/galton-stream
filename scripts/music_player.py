@@ -42,9 +42,12 @@ def get_songs():
 
 
 def write_concat_list(playlist):
+    # Absolute paths only: ffmpeg's concat demuxer resolves relative entries
+    # against the LIST file's directory (/tmp), not our cwd — a relative
+    # MUSIC_DIR would make every track fail to open (exit 254).
     with open(CONCAT_LIST, "w") as f:
         for p in playlist:
-            escaped = p.replace("'", "'\\''")
+            escaped = os.path.abspath(p).replace("'", "'\\''")
             f.write(f"file '{escaped}'\n")
 
 
