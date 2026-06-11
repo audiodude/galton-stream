@@ -36,6 +36,22 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 POLL_INTERVAL = 120
 
+# Broadcast identity is PINNED, never cloned from whatever broadcast happens to
+# be newest in the account. Cloning was how a test-branch broadcast (different
+# stream key + "Alt." title) poisoned production: the monitor inherited its
+# bound stream and metadata. Instead we bind to the liveStream matching
+# YOUTUBE_STREAM_KEY (the exact key ffmpeg pushes to) and stamp these.
+BROADCAST_TITLE = os.environ.get(
+    "BROADCAST_TITLE", "Danger Third Rail radio // Bouncy Balls! 12pm - 6pm PT"
+)
+BROADCAST_DESCRIPTION = os.environ.get(
+    "BROADCAST_DESCRIPTION",
+    "Try chatting or interacting! \U0001f609\n\n"
+    "#punkpop #indie #rock #ambientmusic #electronicmusic #chiptune #synthmusic \n\n"
+    "Music by Danger Third Rail/Travis Briggs! 20 Years of amateur songs!\n"
+    "See https://dangerthirdrail.com and https://songs.travisbriggs.com for more.",
+)
+
 # Railway API for service redeploy
 RAILWAY_API_TOKEN = os.environ.get("RAILWAY_API_TOKEN", "")
 GALTON_STREAM_SERVICE_ID = os.environ.get("GALTON_STREAM_SERVICE_ID", "")
@@ -236,19 +252,6 @@ def youtube_api_request(url, method="GET", body=None):
         return None
 
 
-def get_recent_broadcast():
-    """Get the most recent broadcast (any status). Used to clone metadata
-    for the next day's broadcast."""
-    for status in ("active", "upcoming", "completed"):
-        result = youtube_api_request(
-            "https://www.googleapis.com/youtube/v3/liveBroadcasts"
-            f"?part=snippet,status,contentDetails&broadcastStatus={status}&maxResults=1"
-        )
-        if result and result.get("items"):
-            return result["items"][0]
-    return None
-
-
 def get_live_or_pending_broadcasts():
     """Return broadcasts currently in active or upcoming state (i.e. still
     consuming a stream slot). Empty list means no broadcast exists right now."""
@@ -331,23 +334,45 @@ def set_broadcast_privacy(broadcast_id, privacy):
     return False
 
 
-def get_bound_stream_id(broadcast):
-    """Get the stream ID bound to a broadcast."""
-    content_details = broadcast.get("contentDetails", {})
-    return content_details.get("boundStreamId")
+_production_stream_id = None
 
 
-def create_new_broadcast(old_broadcast):
-    """Create a new broadcast cloning settings from the old one.
+def get_production_stream_id():
+    """Resolve the liveStream id whose stream key == YOUTUBE_STREAM_KEY — i.e.
+    the exact stream ffmpeg pushes to. Binding broadcasts to this (instead of
+    cloning whatever the most-recent broadcast was bound to) guarantees the
+    bound stream always matches the encoder's target, so a stray broadcast on a
+    different key can never poison the lineage. Cached: the key->id mapping is
+    stable for the life of the stream key."""
+    global _production_stream_id
+    if _production_stream_id:
+        return _production_stream_id
+    if not YOUTUBE_STREAM_KEY:
+        log("YOUTUBE_STREAM_KEY unset; cannot resolve production stream")
+        return None
+    result = youtube_api_request(
+        "https://www.googleapis.com/youtube/v3/liveStreams"
+        "?part=id,cdn&mine=true&maxResults=50"
+    )
+    if not result:
+        return None
+    for s in result.get("items", []):
+        name = s.get("cdn", {}).get("ingestionInfo", {}).get("streamName")
+        if name == YOUTUBE_STREAM_KEY:
+            _production_stream_id = s.get("id")
+            log(f"Resolved production stream {_production_stream_id} from key")
+            return _production_stream_id
+    log("No liveStream matches YOUTUBE_STREAM_KEY; cannot bind broadcast")
+    return None
+
+
+def create_new_broadcast():
+    """Create a new broadcast with the pinned production title/description.
     Returns (new_broadcast_id, new_video_id) or (None, None)."""
-    snippet = old_broadcast.get("snippet", {})
-    title = snippet.get("title", "Galton Board Live Stream")
-    description = snippet.get("description", "")
-
     body = {
         "snippet": {
-            "title": title,
-            "description": description,
+            "title": BROADCAST_TITLE,
+            "description": BROADCAST_DESCRIPTION,
             "scheduledStartTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         },
         "status": {
@@ -558,11 +583,10 @@ def reconcile_broadcast():
         return
 
     if in_window:
-        prev = get_recent_broadcast()
-        if not prev:
-            log("No previous broadcast to clone metadata from; skipping create")
+        stream_id = get_production_stream_id()
+        if not stream_id:
+            log("Cannot resolve production stream; skipping broadcast create")
             return
-        stream_id = get_bound_stream_id(prev)
 
         # If we have a recently-created broadcast bound to our stream,
         # ffmpeg is still connecting — don't spawn a duplicate.
@@ -594,20 +618,17 @@ def reconcile_broadcast():
                 log(f"Deleting stale broadcast {bid} bound to our stream")
                 delete_broadcast(bid)
 
-        new_id, new_video_id = create_new_broadcast(prev)
+        new_id, new_video_id = create_new_broadcast()
         if not new_id:
             log("create_new_broadcast failed")
             return
-        if stream_id:
-            bind_stream_to_broadcast(new_id, stream_id)
-            # YouTube's enableAutoStart only fires when a stream goes
-            # inactive -> active with a broadcast already bound. If ffmpeg
-            # is already pushing (stream already active) at bind time, the
-            # broadcast will sit in `ready` forever. Bounce ffmpeg so the
-            # stream reactivates with our new broadcast bound and auto-starts.
-            restart_ffmpeg()
-        else:
-            log("No stream bound on previous broadcast; ffmpeg will auto-bind")
+        bind_stream_to_broadcast(new_id, stream_id)
+        # YouTube's enableAutoStart only fires when a stream goes
+        # inactive -> active with a broadcast already bound. If ffmpeg
+        # is already pushing (stream already active) at bind time, the
+        # broadcast will sit in `ready` forever. Bounce ffmpeg so the
+        # stream reactivates with our new broadcast bound and auto-starts.
+        restart_ffmpeg()
         log(f"New broadcast created: https://www.youtube.com/live/{new_video_id}")
         return
 
