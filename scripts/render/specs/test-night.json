@@ -28,9 +28,9 @@
     "kind": "piece"
   },
   {
-    "model": "radial_burst",
-    "preset": "cataclysm",
-    "seed": 105,
+    "model": "text_ident",
+    "preset": "plz_ignore",
+    "seed": 1,
     "duration_sec": 12,
     "kind": "ident"
   }
