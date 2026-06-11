@@ -186,6 +186,7 @@ ffmpeg \
     -r 60 \
     -i "$VIDEO_PIPE" \
     -thread_queue_size 8 \
+    -re \
     -f s16le \
     -ar 44100 \
     -ac 2 \
