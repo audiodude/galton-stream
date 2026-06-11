@@ -273,13 +273,15 @@ def main():
         last_id = entry["id"]
         idx    += 1
 
-        if reason == "boundary":
-            # Song boundary: play one ident fully, then continue piece loop.
+        if reason in ("boundary", "eof"):
+            # Every piece transition gets an ident — it's what makes a cut
+            # read as intentional. EOF chains (piece ran out before a song
+            # boundary) used to cut directly and looked broken mid-song;
+            # production sizing (20-min pieces, 15-min dwell) makes EOF rare,
+            # so the ident here is a safety net, not the norm.
             ident = pick_ident(idents)
             if ident:
                 play_entry(ident, pipe_fd, watch_song=False)
-
-        # reason == "eof": chain directly into next piece (no ident).
 
     os.close(pipe_fd)
     print("[video] shutdown complete", flush=True)
