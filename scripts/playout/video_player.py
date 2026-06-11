@@ -89,17 +89,29 @@ def _write_all(pipe_fd, data):
         view = view[n:]
 
 
-def stream_to_pipe(proc, pipe_fd, stop_event):
+# Most recent full frame written to the pipe — replayed at 60 fps to bridge
+# decoder-swap gaps. An empty pipe stalls the master ffmpeg, which underruns
+# YouTube's player (visible as the stream "dying" at every transition).
+_last_frame = [None]
+
+
+def stream_to_pipe(proc, pipe_fd, stop_event, initial=b""):
     """Copy proc stdout → pipe_fd in WHOLE FRAMES until EOF, proc dies, or stop set.
 
     stop_event is honored only at frame boundaries, and a trailing partial
     frame at EOF/kill is dropped, so the pipe always stays frame-aligned.
+    `initial` carries bytes already read during warmup.
     Returns 'eof' on natural end, 'interrupted' if stopped, 'pipe_lost' if a
     write fails (reader died).
     """
-    buf = bytearray()
+    buf = bytearray(initial)
     while not stop_event.is_set():
         try:
+            while len(buf) >= FRAME_BYTES:
+                frame = bytes(buf[:FRAME_BYTES])
+                _write_all(pipe_fd, frame)
+                _last_frame[0] = frame
+                del buf[:FRAME_BYTES]
             chunk = proc.stdout.read(CHUNK)
             if not chunk:
                 # EOF: drop any partial trailing frame rather than misalign the pipe.
@@ -107,9 +119,6 @@ def stream_to_pipe(proc, pipe_fd, stop_event):
                     print(f"[video] dropping {len(buf)} partial-frame bytes at EOF", flush=True)
                 return "eof"
             buf.extend(chunk)
-            while len(buf) >= FRAME_BYTES:
-                _write_all(pipe_fd, buf[:FRAME_BYTES])
-                del buf[:FRAME_BYTES]
         except OSError as e:
             print(f"[video] pipe write error: {e}", flush=True)
             return "pipe_lost"
@@ -135,10 +144,46 @@ def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC):
     stop_event = threading.Event()
     start_mono = time.monotonic()
 
+    # Decoder warmup bridge: until this decoder yields its first full frame
+    # (-re startup takes ~0.2-0.5s), keep the pipe fed by repeating the
+    # previous piece's last frame at 60 fps. An empty pipe stalls the master
+    # ffmpeg and underruns the live stream at every transition.
+    warm = bytearray()
+    out_fd = proc.stdout.fileno()
+    os.set_blocking(out_fd, False)
+    next_tick = time.monotonic()
+    try:
+        while len(warm) < FRAME_BYTES:
+            chunk = proc.stdout.read(CHUNK)
+            if chunk:
+                warm.extend(chunk)
+                continue
+            if chunk == b"":
+                break  # decoder exited before producing a frame
+            if _last_frame[0] is not None:
+                now = time.monotonic()
+                if now >= next_tick:
+                    _write_all(pipe_fd, _last_frame[0])
+                    next_tick = max(next_tick + 1.0 / FPS, now - 0.1)
+                else:
+                    time.sleep(min(next_tick - now, 0.005))
+            else:
+                time.sleep(0.005)
+    except OSError as e:
+        print(f"[video] pipe write error during warmup: {e}", flush=True)
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+        print(f"[video] END id={eid} reason=pipe_lost elapsed=0.0s", flush=True)
+        return "pipe_lost", 0.0
+    os.set_blocking(out_fd, True)
+
     # Stream in a background thread so the main thread can poll SONG_FILE.
     stream_result = [None]  # mutable container for thread return value
     def _stream():
-        stream_result[0] = stream_to_pipe(proc, pipe_fd, stop_event)
+        stream_result[0] = stream_to_pipe(proc, pipe_fd, stop_event, initial=bytes(warm))
     t = threading.Thread(target=_stream, daemon=True)
     t.start()
 
