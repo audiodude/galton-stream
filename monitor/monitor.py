@@ -918,6 +918,19 @@ def main():
         f"refresh_token={'set' if YOUTUBE_REFRESH_TOKEN else 'MISSING'}")
     log("Monitor service started.")
 
+    # Startup readiness gate. Right after a monitor (re)start, the first
+    # request to galton-stream over Railway's internal network can race
+    # container networking and fail spuriously. Without this, that single
+    # false failure trips fallback (a second ffmpeg fighting the live encoder
+    # on the same stream key) and pages "stream unreachable". Wait until
+    # galton-stream answers — or ~30s elapses — before failure-counting starts.
+    for attempt in range(1, 11):
+        if poll_health() is not None:
+            log(f"galton-stream reachable (startup probe {attempt})")
+            break
+        log(f"galton-stream not reachable yet (startup probe {attempt}/10)")
+        time.sleep(3)
+
     first_iteration = True
     while True:
         if not first_iteration:
