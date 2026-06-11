@@ -120,8 +120,8 @@ downscales to 1280×720 in the mp4 encode (lanczos — doubles as supersampling 
 gets a sidecar JSON, and
 `make_manifest.py` collects sidecars into `catalog.json`:
 `{"pieces": [{id, kind: piece|ident, model, preset, seed, duration_sec, file, rendered_at}]}`.
-Renders are serialized (override.cfg is per-project state), idempotent (existing mp4s
-are skipped; writes are atomic), and ~3× realtime under xvfb on a 3080 Ti.
+Renders are serialized (one GPU, no contention), idempotent (existing mp4s are
+skipped; writes are atomic), and ~3× realtime under xvfb on a 3080 Ti.
 
 ## Video playout (scripts/playout/)
 
