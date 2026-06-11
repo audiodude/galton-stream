@@ -41,27 +41,24 @@ fi
 # Temp files
 TMP_PRESET="$(mktemp /tmp/preset_XXXXXX.json)"
 TMP_AVI="$(mktemp /tmp/render_XXXXXX.avi)"
-OVERRIDE_CFG="$MODEL_DIR/override.cfg"
+
 
 cleanup() {
-    rm -f "$TMP_PRESET" "$TMP_AVI" "$OVERRIDE_CFG"
+    rm -f "$TMP_PRESET" "$TMP_AVI"
 }
 trap cleanup EXIT
 
 # Substitute seed into preset
 jq --argjson seed "$SEED" '.seed = $seed' "$PRESET_PATH" > "$TMP_PRESET"
 
-# Write override.cfg for 720p capture
-cat > "$OVERRIDE_CFG" <<'EOF'
-[display]
-window/size/viewport_width=1280
-window/size/viewport_height=720
-EOF
-
+# Render at the models' native 1080p design space, downscale to 720p in the
+# encode. Do NOT shrink the project viewport (the old override.cfg approach):
+# that changes the design space and CROPS the composition rather than scaling
+# it — every model is composed in 1920x1080 coordinates.
 echo "[render_piece] rendering $MODEL/$PRESET seed=$SEED duration=${DURATION}s -> $OUT_MP4"
 START_TIME="$(date +%s)"
 
-xvfb-run -a -s "-screen 0 1280x720x24" \
+xvfb-run -a -s "-screen 0 1920x1080x24" \
     godot --path "$MODEL_DIR" \
     --write-movie "$TMP_AVI" \
     --fixed-fps 60 \
@@ -72,8 +69,10 @@ echo "[render_piece] godot done in ${ELAPSED}s, encoding mp4..."
 
 # Encode to a temp name and mv into place so a killed run can never leave a
 # half-written mp4 that the skip-if-exists check would mistake for complete.
+# Lanczos downscale 1080p -> 720p doubles as supersampling AA.
 ffmpeg -y -loglevel error \
     -i "$TMP_AVI" \
+    -vf "scale=1280:720:flags=lanczos" \
     -c:v libx264 -crf 18 -pix_fmt yuv420p \
     -r 60 -an \
     -f mp4 "${OUT_MP4}.tmp"

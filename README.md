@@ -114,8 +114,10 @@ scripts/render/render_catalog.sh scripts/render/specs/test-night.json ./catalog
 scripts/render/upload_catalog.sh ./catalog s3://bucket/catalog/
 ```
 
-Each piece renders at 1280×720@60 (via a temporary `override.cfg` in the model's
-project dir — Movie Maker ignores `--resolution`), gets a sidecar JSON, and
+Each piece renders at the models' native 1920×1080@60 (Movie Maker captures the
+project viewport; shrinking it would crop the composition, not scale it), then
+downscales to 1280×720 in the mp4 encode (lanczos — doubles as supersampling AA),
+gets a sidecar JSON, and
 `make_manifest.py` collects sidecars into `catalog.json`:
 `{"pieces": [{id, kind: piece|ident, model, preset, seed, duration_sec, file, rendered_at}]}`.
 Renders are serialized (override.cfg is per-project state), idempotent (existing mp4s
