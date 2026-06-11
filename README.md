@@ -175,7 +175,7 @@ YouTube deranks channels that stream 24/7. galton-monitor creates a fresh broadc
 
 > **Why pinned, not cloned.** An earlier version cloned the title/description **and** the bound stream from whatever broadcast was newest in the account. That made production hostage to any stray broadcast: spinning up a **test broadcast on a second stream key** (e.g. while testing another branch) made *it* the newest broadcast, so the monitor began binding production broadcasts to the test key. FFmpeg pushes to `YOUTUBE_STREAM_KEY`, but the bound stream received `noData` → `enableAutoStart` never fired → the broadcast sat in `ready` → after 15 min it was declared stale, deleted, and FFmpeg killed — a ~16-minute churn loop. The broadcasts also inherited the test branch's title. Binding by key and pinning the metadata makes the lineage independent of other broadcasts, so **you can run test broadcasts on a different stream key without touching production.** To change the production stream, repoint `YOUTUBE_STREAM_KEY` (both services); to change copy, set `BROADCAST_TITLE` / `BROADCAST_DESCRIPTION` (env-overridable, defaults baked into `monitor/monitor.py`).
 
-The radio redirect is implemented as an S3 website bucket (`radio.dangerthirdrail.com`) fronted by CloudFront. Online = bucket routing rule 301s to YouTube. Offline = routing rule is removed and `index.html` (a responsive title card) is served.
+The radio redirect is implemented as an S3 website bucket (`radio.dangerthirdrail.com`) fronted by CloudFront. Online = bucket routing rule 302s to YouTube (302 not 301, so the target can change daily without browsers caching it). Offline = routing rule is removed and `index.html` (a responsive title card) is served.
 
 ### Recovery escalation (within the active window)
 

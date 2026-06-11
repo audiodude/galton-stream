@@ -88,7 +88,7 @@ CONSUMER_END = (18, 0)
 OPERATIONAL_END = (18, 5)
 
 # Radio landing page (radio.dangerthirdrail.com) — S3 website bucket
-# fronted by CloudFront. In-window: bucket routing rule 301-redirects to
+# fronted by CloudFront. In-window: bucket routing rule 302-redirects to
 # youtube.com/live/<video_id>. Out-of-window: routing rule removed, index.html
 # (the offline title card) is served.
 RADIO_BUCKET = os.environ.get("RADIO_BUCKET", "radio.dangerthirdrail.com")
