@@ -32,7 +32,13 @@ video_player.py: a single wall-clock pacer thread owns all pipe writes at exactl
 structurally constant through transitions/warmups/EOF (subsumes the held-frame
 bridge), ending the videoIngestionStarved dips that flap YouTube's health grade
 when transitions are frequent. Verified need: 2026-06-11 live session — supply
-dips ~0.2-0.4s per transition survive all micro-optimizations.
+dips ~0.2-0.4s per transition survive all micro-optimizations. PLUS: -re decoder
+pacing runs slightly sub-realtime, draining YouTube's player buffer (~30-40s to
+empty) — the all-night "dies after 30s" symptom. Production precedent: galton's
+x11grab input IS a wall-clock pacer (samples the display at exactly 30fps
+regardless of render state) — the pacer thread restores that invariant for
+file-decoder playout. Audio side already has production parity (-re + queue 8 on
+the pipe input; see queue_blocking_report.md for why big queues hide drift).
 
 ## Infrastructure
 
