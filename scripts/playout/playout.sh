@@ -61,6 +61,15 @@ if [ "$#" -gt 0 ]; then
     esac
 fi
 
+# Exactly one playout per machine: two instances would interleave reads on the
+# shared audio pipe (shredding the PCM) and double-push to the RTMP key —
+# YouTube rejects dual ingestion. Tonight taught us this the hard way.
+exec 200>/tmp/playout.lock
+if ! flock -n 200; then
+    echo "[playout] another playout instance holds /tmp/playout.lock — refusing to start" >&2
+    exit 1
+fi
+
 CATALOG_DIR="${CATALOG_DIR:-./catalog}"
 AUDIO_PIPE="${AUDIO_PIPE:-/tmp/audio_pipe}"
 VIDEO_PIPE="${VIDEO_PIPE:-/tmp/video_pipe}"
@@ -138,6 +147,17 @@ echo "[playout] video_player pid=$VIDEO_PLAYER_PID"
 # Give video_player a moment to call mkfifo before ffmpeg tries to open the pipe.
 sleep 1
 
+# Timeline continuity across restarts: a broadcast that survives a playout
+# restart (auto-stop disabled) must see monotonic timestamps — a fresh ffmpeg
+# starts at t=0, and that regression garbles audio/video at YouTube's live
+# edge. Persist the stream epoch and offset every run's output timestamps.
+EPOCH_FILE="${EPOCH_FILE:-/tmp/playout_epoch}"
+if [ ! -f "$EPOCH_FILE" ]; then
+    date +%s > "$EPOCH_FILE"
+fi
+TS_OFFSET=$(( $(date +%s) - $(cat "$EPOCH_FILE") ))
+echo "[playout] output_ts_offset=${TS_OFFSET}s (epoch file: $EPOCH_FILE)"
+
 echo "[playout] starting master ffmpeg → $OUTPUT"
 
 # Encoder settings for 720p60. The two output modes want different encodes:
@@ -149,7 +169,9 @@ echo "[playout] starting master ffmpeg → $OUTPUT"
 #           particle fields macroblock badly under any hard rate cap.
 # Both: yuv420p, aac 128k (as start.sh), drawtext reload=1, flv container.
 if [ -n "${YOUTUBE_STREAM_KEY:-}" ]; then
-    ENCODE_ARGS=(-preset veryfast -b:v 7000k -maxrate 7500k -bufsize 14000k -g 120)
+    # 6000k = top of YouTube's documented H.264 range for 720p60; more just
+    # triggers Studio bitrate nags and dies in their transcode anyway.
+    ENCODE_ARGS=(-preset veryfast -b:v 5500k -maxrate 6000k -bufsize 11000k -g 120)
 else
     ENCODE_ARGS=(-preset medium -crf 18 -g 120)
 fi
@@ -163,11 +185,12 @@ ffmpeg \
     -s 1280x720 \
     -r 60 \
     -i "$VIDEO_PIPE" \
-    -thread_queue_size 8 \
+    -thread_queue_size 64 \
     -f s16le \
     -ar 44100 \
     -ac 2 \
     -i "$AUDIO_PIPE" \
+    -output_ts_offset "$TS_OFFSET" \
     -vf "drawtext=fontfile=${FONT}:textfile=${SONG_FILE}:reload=1:\
 fontsize=28:fontcolor=white:shadowcolor=black:shadowx=2:shadowy=2:\
 x=20:y=h-th-20" \
