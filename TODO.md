@@ -25,9 +25,6 @@ as the system goes to production, in the order they'll likely bite:
    display; root cause unexamined — readback stalls?). 50×20 min ≈ 50 GPU-hours
    per full catalog. Feeds the cloud-rendering item below; also worth one session
    profiling WHY xvfb is slower.
-5. **Notification path for unattended runs** — desktop notify-send requires the
-   session's DISPLAY/DBUS env; cron/systemd render batches need those passed
-   explicitly (or a different channel) or completion alerts silently vanish.
 
 ## Infrastructure
 
