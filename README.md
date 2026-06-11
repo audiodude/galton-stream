@@ -134,8 +134,8 @@ RTMP *is* FLV-over-TCP, and truncated FLV stays playable.)
 Transitions happen at **song boundaries**: `video_player.py` watches
 `/tmp/current_song.txt` at 1 Hz; at the first song change after `DWELL_SEC` (default
 900) it cuts to a random ident, then the next shuffled piece. A piece that ends
-naturally chains straight to the next (no ident). If the master ffmpeg dies/restarts,
-the player reopens the pipe and replays the current piece.
+naturally (EOF before a boundary) also transitions through an ident. If the master
+ffmpeg dies/restarts, the player reopens the pipe and replays the current piece.
 
 ```bash
 # everything (music + titles + playout) in one command:
