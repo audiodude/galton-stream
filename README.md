@@ -138,8 +138,9 @@ naturally chains straight to the next (no ident). If the master ffmpeg dies/rest
 the player reopens the pipe and replays the current piece.
 
 ```bash
-# music stack must already be running (audio pipe + current_song.txt)
-DWELL_SEC=900 CATALOG_DIR=./catalog OUTPUT=./playout_test.flv scripts/playout/playout.sh
+# everything (music + titles + playout) in one command:
+DWELL_SEC=900 CATALOG_DIR=./catalog OUTPUT=./playout_test.mp4 scripts/playout/run_local.sh
+# or run playout.sh alone if the music stack is already up
 ```
 
 | Variable | Default | Description |
