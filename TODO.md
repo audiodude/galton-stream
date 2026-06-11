@@ -3,6 +3,32 @@
 (Migrated from vxstory/TODO.md 2026-06-09 and expanded; this is the single roadmap
 for the radio + vxstory system. vxstory repo: https://github.com/audiodude/vxstory)
 
+## Known seams (open edges of the playout architecture, 2026-06-10)
+
+The local end-to-end tests work; these are the boundaries that will need attention
+as the system goes to production, in the order they'll likely bite:
+
+1. **Catalog freshness/distribution** — playout reads a local dir; the Railway
+   service needs the music-style "sync from S3 at window open" plus a policy for
+   picking up nightly catalog additions (full re-sync per day is probably enough;
+   manifest-uploaded-last already guarantees consistency mid-sync).
+2. **Scheduling intelligence lives nowhere** — shuffle-with-no-repeat in
+   `video_player.py` is the entire brain. Mood/time-of-day curation, ident variety,
+   and "don't repeat within N hours" all want manifest fields (tags) + selection
+   logic in the video player. Design the manifest fields before the 50-piece
+   catalog render so pieces are born tagged.
+3. **Cut latency** (~5–6 s after the audible song change) — cost of 1 Hz file-watch
+   as the boundary signal. Acceptable now. If it grates: music_player knows track
+   durations, so it could write a *predicted* boundary timestamp; video_player
+   could then cut frame-exact (or even pre-roll the ident).
+4. **Render economics** — xvfb renders run ~3× realtime (vs ~1.5× on the live X
+   display; root cause unexamined — readback stalls?). 50×20 min ≈ 50 GPU-hours
+   per full catalog. Feeds the cloud-rendering item below; also worth one session
+   profiling WHY xvfb is slower.
+5. **Notification path for unattended runs** — desktop notify-send requires the
+   session's DISPLAY/DBUS env; cron/systemd render batches need those passed
+   explicitly (or a different channel) or completion alerts silently vanish.
+
 ## Infrastructure
 
 ### Cloud-compute rendering
