@@ -140,12 +140,20 @@ sleep 1
 
 echo "[playout] starting master ffmpeg → $OUTPUT"
 
-# Encoder settings for 720p60:
-#   video: libx264 veryfast, 4500k (up from start.sh's 2500k@30fps), keyframe
-#          every 60 frames (1s at 60fps), yuv420p.
-#   audio: aac 128k 44.1kHz stereo (same as start.sh).
-#   drawtext: textfile reload=1 so ffmpeg re-reads current_song.txt each frame.
-#   format: flv works for both local file and RTMP targets.
+# Encoder settings for 720p60. The two output modes want different encodes:
+#   RTMP  — capped bitrate (YouTube recommends ~6-7.5 Mbps for 720p60; the
+#           dense particle content needs every bit), 2s GOP per YT guidance.
+#           No zerolatency: it disables B-frames/lookahead for latency this
+#           use case doesn't need, and costs real quality-per-bit.
+#   file  — CRF (quality-targeted, bitrate unconstrained) for review copies;
+#           particle fields macroblock badly under any hard rate cap.
+# Both: yuv420p, aac 128k (as start.sh), drawtext reload=1, flv container.
+if [ -n "${YOUTUBE_STREAM_KEY:-}" ]; then
+    ENCODE_ARGS=(-preset veryfast -b:v 7000k -maxrate 7500k -bufsize 14000k -g 120)
+else
+    ENCODE_ARGS=(-preset medium -crf 18 -g 120)
+fi
+
 ffmpeg \
     -loglevel warning \
     -stats_period 5 \
@@ -164,13 +172,8 @@ ffmpeg \
 fontsize=28:fontcolor=white:shadowcolor=black:shadowx=2:shadowy=2:\
 x=20:y=h-th-20" \
     -c:v libx264 \
-    -preset veryfast \
-    -tune zerolatency \
-    -b:v 4500k \
-    -maxrate 4500k \
-    -bufsize 9000k \
+    "${ENCODE_ARGS[@]}" \
     -pix_fmt yuv420p \
-    -g 60 \
     -c:a aac \
     -b:a 128k \
     -ar 44100 \
