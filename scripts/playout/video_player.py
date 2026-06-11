@@ -26,6 +26,8 @@ import time
 CATALOG_DIR = os.environ.get("CATALOG_DIR", "./catalog")
 VIDEO_PIPE   = os.environ.get("VIDEO_PIPE",  "/tmp/video_pipe")
 SONG_FILE    = os.environ.get("SONG_FILE",   "/tmp/current_song.txt")
+SONG_CLOCK   = os.environ.get("SONG_CLOCK",  "/tmp/song_clock.json")
+AUDIO_PIPE_LEAD = 0.4  # seconds the audio pipe runs ahead of the mux
 DWELL_SEC    = int(os.environ.get("DWELL_SEC", "900"))
 FPS          = 60
 SIZE         = "1280x720"
@@ -125,11 +127,30 @@ def stream_to_pipe(proc, pipe_fd, stop_event, initial=b""):
     return "interrupted"
 
 
-def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC):
+def read_song_clock():
+    """Read the music player's song clock: {file, started_at, duration, ends_at}.
+
+    Returns None when missing, unparsable, or stale (ends_at well in the past
+    — e.g. the music player died), so callers fall back to reactive cuts.
+    """
+    try:
+        with open(SONG_CLOCK) as f:
+            clock = json.load(f)
+        if float(clock["ends_at"]) < time.time() - 5.0:
+            return None
+        return clock
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC, ident_dur=0.0):
     """Play one catalog entry into pipe_fd.
 
-    If watch_song=True, monitor SONG_FILE; return ('boundary', elapsed) when
-    content changes AND elapsed >= dwell_sec, interrupting playback.
+    If watch_song=True, cut at song boundaries (after dwell_sec of play):
+    PREDICTIVELY when the song clock is available — the cut fires ident_dur
+    seconds BEFORE the boundary so the ident straddles it and the next piece
+    starts with the next song — or REACTIVELY (content change of SONG_FILE,
+    ~1-6s late) when the clock is absent.
     Returns ('eof', elapsed) on natural file end, ('boundary', elapsed) on cut,
     or ('pipe_lost', elapsed) when the pipe write fails (reader died).
     """
@@ -143,6 +164,7 @@ def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC):
     _current_decoder_proc[0] = proc  # so the signal handler can kill it
     stop_event = threading.Event()
     start_mono = time.monotonic()
+    start_wall = time.time()
 
     # Decoder warmup bridge: until this decoder yields its first full frame
     # (-re startup takes ~0.2-0.5s), keep the pipe fed by repeating the
@@ -204,17 +226,35 @@ def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC):
                 break
 
             if watch_song:
-                current_song = read_song_file()
-                if current_song != last_song and elapsed >= dwell_sec:
-                    reason = "boundary"
-                    stop_event.set()
-                    proc.terminate()
-                    t.join(timeout=5)
-                    break
-                # Update last_song even if dwell not reached, so the *next*
-                # eligible check catches the boundary that's already been crossed.
-                if current_song != last_song:
-                    last_song = current_song
+                clock = read_song_clock()
+                if clock is not None:
+                    # Predictive: cut ident_dur early so the ident straddles the
+                    # boundary. AUDIO_PIPE_LEAD compensates for audio sitting in
+                    # its pipe ~0.4s ahead of the mux.
+                    boundary = float(clock["ends_at"]) + AUDIO_PIPE_LEAD
+                    now_wall = time.time()
+                    if (boundary - start_wall) >= dwell_sec and now_wall >= boundary - ident_dur:
+                        reason = "boundary"
+                        print(f"[video] SCHED_CUT boundary_in={boundary - now_wall:.1f}s "
+                              f"ident_dur={ident_dur:.1f}s song={clock.get('file', '?')}",
+                              flush=True)
+                        stop_event.set()
+                        proc.terminate()
+                        t.join(timeout=5)
+                        break
+                else:
+                    # Reactive fallback: notice the song already changed.
+                    current_song = read_song_file()
+                    if current_song != last_song and elapsed >= dwell_sec:
+                        reason = "boundary"
+                        stop_event.set()
+                        proc.terminate()
+                        t.join(timeout=5)
+                        break
+                    # Update last_song even if dwell not reached, so the *next*
+                    # eligible check catches the boundary that's already been crossed.
+                    if current_song != last_song:
+                        last_song = current_song
 
         # If the thread finished naturally, check for pipe_lost set at EOF path.
         if reason == "eof" and stream_result[0] == "pipe_lost":
@@ -295,7 +335,13 @@ def main():
             idx   = 0
 
         entry  = pieces[order[idx]]
-        reason, _ = play_entry(entry, pipe_fd, watch_song=True, dwell_sec=DWELL_SEC)
+        # Pre-pick the transition ident: the predictive scheduler needs its
+        # duration to start the cut early enough for the ident to straddle
+        # the song boundary.
+        next_ident = pick_ident(idents)
+        next_ident_dur = float(next_ident["duration_sec"]) if next_ident else 0.0
+        reason, _ = play_entry(entry, pipe_fd, watch_song=True, dwell_sec=DWELL_SEC,
+                               ident_dur=next_ident_dur)
 
         if _shutdown.is_set():
             break
@@ -320,13 +366,11 @@ def main():
 
         if reason in ("boundary", "eof"):
             # Every piece transition gets an ident — it's what makes a cut
-            # read as intentional. EOF chains (piece ran out before a song
-            # boundary) used to cut directly and looked broken mid-song;
-            # production sizing (20-min pieces, 15-min dwell) makes EOF rare,
-            # so the ident here is a safety net, not the norm.
-            ident = pick_ident(idents)
-            if ident:
-                play_entry(ident, pipe_fd, watch_song=False)
+            # read as intentional. Play the PRE-PICKED ident: the scheduler
+            # timed the cut so this exact ident's duration lands the next
+            # piece on the song boundary.
+            if next_ident:
+                play_entry(next_ident, pipe_fd, watch_song=False)
 
     os.close(pipe_fd)
     print("[video] shutdown complete", flush=True)

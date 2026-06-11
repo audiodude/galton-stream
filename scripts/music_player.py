@@ -27,6 +27,10 @@ MUSIC_DIR = os.environ.get("MUSIC_DIR", "/data/mp3")
 AUDIO_PIPE = "/tmp/audio_pipe"
 STATE_FILE = os.environ.get("STATE_FILE", "/data/playlist_state.json")
 CONCAT_LIST = "/tmp/concat_list.txt"
+# Song clock: published at every song start so downstream consumers (the
+# video playout) can SCHEDULE cuts at upcoming song boundaries instead of
+# reacting after the fact. Atomic write; nothing in this player reads it.
+SONG_CLOCK = "/tmp/song_clock.json"
 
 BYTES_PER_SECOND = 44100 * 2 * 2  # 44.1kHz, stereo, s16le
 
@@ -98,6 +102,45 @@ def spawn_decoder():
         "-ac", "2",
         "pipe:1",
     ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+_duration_cache = {}
+
+
+def probe_duration(path):
+    """Track duration via ffprobe, cached per path. None on failure."""
+    if path not in _duration_cache:
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", path],
+                capture_output=True, text=True, timeout=10)
+            _duration_cache[path] = float(out.stdout.strip())
+        except Exception:
+            _duration_cache[path] = None
+    return _duration_cache[path]
+
+
+def write_song_clock(path):
+    """Publish {file, started_at, duration, ends_at} for the song now starting.
+
+    Timestamps are in the decode/pipe-write domain (unix seconds); consumers
+    add their own lead compensation. Atomic tmp+rename so readers never see
+    a partial file. Failures are non-fatal — the clock is advisory.
+    """
+    dur = probe_duration(path)
+    if dur is None:
+        return
+    now = time.time()
+    doc = {"file": os.path.basename(path), "started_at": now,
+           "duration": dur, "ends_at": now + dur}
+    try:
+        tmp = SONG_CLOCK + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(doc, f)
+        os.replace(tmp, SONG_CLOCK)
+    except OSError:
+        pass
 
 
 def stderr_reader(proc, playlist_set, transitions):
@@ -182,6 +225,7 @@ def play_loop():
                     if new_idx != current_idx:
                         current_idx = new_idx
                         save_state(playlist, current_idx)
+                        write_song_clock(playlist[current_idx])
                         wall = time.monotonic() - player_start
                         print(f"[audio] DECODE_START idx={current_idx} wall={wall:.2f} "
                               f"audio_s={total_bytes / BYTES_PER_SECOND:.2f} "
