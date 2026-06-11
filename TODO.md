@@ -26,6 +26,14 @@ as the system goes to production, in the order they'll likely bite:
    per full catalog. Feeds the cloud-rendering item below; also worth one session
    profiling WHY xvfb is slower.
 
+### Video pacer thread (playout) — first task of next playout session
+video_player.py: a single wall-clock pacer thread owns all pipe writes at exactly
+60fps from a latest-frame slot; decoders feed the slot. Makes video supply
+structurally constant through transitions/warmups/EOF (subsumes the held-frame
+bridge), ending the videoIngestionStarved dips that flap YouTube's health grade
+when transitions are frequent. Verified need: 2026-06-11 live session — supply
+dips ~0.2-0.4s per transition survive all micro-optimizations.
+
 ## Infrastructure
 
 ### Cloud-compute rendering
