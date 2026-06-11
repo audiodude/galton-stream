@@ -214,7 +214,10 @@ def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC, ident_dur=
 
     try:
         while t.is_alive():
-            time.sleep(1.0)
+            # 100ms poll: EOF detection latency is dead air in the video pipe
+            # (the bridge only runs during the NEXT entry's warmup), and at
+            # 1s it was draining YouTube's buffer at every ident transition.
+            time.sleep(0.1)
             elapsed = time.monotonic() - start_mono
 
             # Check if the streaming thread detected a pipe failure.
