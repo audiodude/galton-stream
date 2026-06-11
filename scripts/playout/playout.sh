@@ -185,7 +185,7 @@ ffmpeg \
     -s 1280x720 \
     -r 60 \
     -i "$VIDEO_PIPE" \
-    -thread_queue_size 64 \
+    -thread_queue_size 8 \
     -f s16le \
     -ar 44100 \
     -ac 2 \
