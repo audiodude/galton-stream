@@ -890,9 +890,9 @@ binding via the existing monitor). Those are called out in **bold**.
 
 - [ ] **Step 1: Write `docs/runbooks/prebaked-playout-deploy.md`** with the following, each command exact:
 
-  1. **Provision the box (manual).** A flat-traffic host sized for the 1080p60 bake:
-     **Hetzner dedicated, 16+ threads, ≥500 GB disk, ~20 TB included traffic.**
-     Ubuntu 24.04. Record its IP.
+  1. **Provision the box (manual).** **Hetzner AX42** (Ryzen 7 8700GE, 8c/16t Zen4,
+     ~€48/mo, ~20 TB included traffic, ≥500 GB disk). Ubuntu 24.04. Record its IP.
+     The 8700GE iGPU (VCN/VAAPI) is a hardware-encode fallback for the bake if needed.
   2. **Install deps:** `sudo apt-get update && sudo apt-get install -y ffmpeg awscli python3 && ffmpeg -filters | grep -q subtitles || echo "WARN: ffmpeg lacks libass"`. Verify `ffmpeg`, `ffprobe`, `aws`, `python3`, and that ffmpeg has `libx264` + `subtitles`/libass.
   3. **Deploy the repo:** clone to `/opt/radio`, `git checkout main`. (Re-deploy = `git pull` + `systemctl restart`.)
   4. **Secrets (manual):** write `/etc/radio.env` with `S3_MUSIC_BUCKET`, `S3_CATALOG_URI`, `S3_SHOWS_URI`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, `YOUTUBE_STREAM_KEY` (the **vxstory** key, separate from galton), `YOUTUBE_URL`, `BAKE_RES=1280x720` (→ `1920x1080` when the catalog is re-rendered at 1080p), `BAKE_FPS=60`, `SHOW_DUR=22800`, `BAKE_DWELL=600`, `BAKE_VBITRATE=6M`, plus the YouTube OAuth vars `monitor.py` needs. `chmod 600`.

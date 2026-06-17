@@ -209,13 +209,15 @@ show is born on local disk and the next time those bytes move is straight to
 YouTube. The catalog pieces + music are bake *inputs* — small, reused for weeks,
 synced from S3 and cached locally — not in the daily hot path.
 
-**Production box:** one remote host with **included/flat traffic** (e.g. a Hetzner
-dedicated CPU server, ~€50/mo, 16+ threads, ~20 TB traffic included) that nightly
-syncs catalog+music deltas from S3, runs `plan.py` + `assemble` → `show.mkv` on
-local disk, then during the window stream-copies to YouTube and runs `monitor.py`
-against **localhost** (colocation makes the health poll trivial — no internal DNS
-or tunnel). 0.78 TB/mo of YouTube egress sits far inside the included traffic →
-**$0 marginal egress**, flat predictable bill.
+**Production box (decided):** **Hetzner AX42** — Ryzen 7 8700GE, 8 cores / 16
+threads (Zen4), ~€48/mo, ~20 TB traffic included. It nightly syncs catalog+music
+deltas from S3, runs `plan.py` + `assemble` → `show.mkv` on local disk, then during
+the window stream-copies to YouTube and runs `monitor.py` against **localhost**
+(colocation makes the health poll trivial — no internal DNS or tunnel). 0.78 TB/mo
+of YouTube egress sits far inside the included traffic → **$0 marginal egress**,
+flat predictable bill. Note the 8700GE has an **RDNA3 iGPU with a VCN encoder** —
+a VAAPI hardware-encode fallback for the bake if CPU x264 ever runs tight (quality
+permitting). The bake-fit measurement (below) governs the preset choice on this box.
 
 **Why not Railway / per-GB providers:** a per-GB egress model double-charges the big
 daily artifact (S3→box, then box→YouTube). At 1080p60 that round-trip is
