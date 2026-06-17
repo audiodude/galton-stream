@@ -5,13 +5,31 @@ Architecture mirrors music_player.py (audio pipe) but for video:
   - Reads catalog.json; splits entries into pieces[] and idents[].
   - Shuffled piece order; reshuffled when exhausted (avoid same piece twice
     in a row across reshuffles).
-  - Watches SONG_FILE (default /tmp/current_song.txt) at 1 Hz for content
-    changes. When the song changes AND elapsed >= DWELL_SEC, cuts to ident
-    → next piece.
-  - If a piece's decoder exits on its own before any boundary, chains
-    directly to the next piece (no ident) — dead pipe is the only sin.
-  - Uses -re so each piece is decoded at realtime, keeping song-boundary
-    cuts possible (without -re the whole file dumps into the pipe instantly).
+  - Cuts at song boundaries (after DWELL_SEC of play), predictively when the
+    music player's song clock is available, reactively otherwise.
+
+Pacer model (the supply invariant)
+----------------------------------
+A single wall-clock PACER thread owns every write to the video pipe, emitting
+the most recent decoded frame at 60fps from a latest-frame slot. Decoders run
+under -re and feed the slot; they never touch the pipe.
+
+Why: the master ffmpeg's video input must never run dry. Previously each piece
+wrote the pipe directly, so a decoder swap (transition) or a decoder pacing
+slightly under realtime left the pipe momentarily empty — ffmpeg then blocked
+on the read, dropping output below realtime and slowly draining YouTube's
+player buffer (the "stream dies after ~30s" / videoIngestionStarved symptom).
+
+The pacer fixes this structurally:
+  - Floor: the slot is ALWAYS full (black frame, then last decoded frame), so
+    ffmpeg never blocks on an empty video pipe. Backpressure from ffmpeg
+    (paced realtime by the audio -re input) sets the write rate.
+  - Ceiling: a wall-clock sleep keeps us from exceeding 60fps if the pipe
+    drains in a burst.
+  - Continuity: across decoder swaps/warmups/EOF the slot keeps its last
+    frame, so supply never dips.
+This is the same invariant galton gets for free from x11grab, which samples
+the display at a fixed wall-clock rate regardless of render state.
 """
 
 import json
@@ -33,12 +51,13 @@ FPS          = 60
 SIZE         = "1280x720"
 
 CHUNK = 65536
-# One raw yuv420p frame. The pipe must ONLY ever contain whole frames: the
-# master ffmpeg's rawvideo demuxer reads fixed-size frames, so a single
-# partial frame (e.g. from killing a decoder mid-frame at a boundary cut)
+# One raw yuv420p frame. The slot must ONLY ever hold whole frames: the master
+# ffmpeg's rawvideo demuxer reads fixed-size frames, so a single partial frame
 # permanently shifts its read offset and scrambles everything after it.
 _W, _H = (int(v) for v in SIZE.split("x"))
 FRAME_BYTES = _W * _H * 3 // 2
+# yuv420p black: Y=0 plane, U=V=128 planes.
+_BLACK_FRAME = bytes(_W * _H) + bytes(b"\x80") * (_W * _H // 2)
 
 
 def load_catalog():
@@ -91,39 +110,53 @@ def _write_all(pipe_fd, data):
         view = view[n:]
 
 
-# Most recent full frame written to the pipe — replayed at 60 fps to bridge
-# decoder-swap gaps. An empty pipe stalls the master ffmpeg, which underruns
-# YouTube's player (visible as the stream "dying" at every transition).
-_last_frame = [None]
+# Latest-frame slot: the decoder feed publishes whole frames here; the pacer
+# samples it at 60fps. Reference assignment is atomic under the GIL, so no lock
+# is needed for the single-producer/single-consumer handoff.
+_latest_frame = [_BLACK_FRAME]
+_pipe_lost = threading.Event()
+_shutdown = threading.Event()
+_current_decoder_proc = [None]  # for the signal handler
 
 
-def stream_to_pipe(proc, pipe_fd, stop_event, initial=b""):
-    """Copy proc stdout → pipe_fd in WHOLE FRAMES until EOF, proc dies, or stop set.
+def pacer_loop(pipe_fd):
+    """Own all pipe writes: emit the latest frame at a wall-clock-capped 60fps.
 
-    stop_event is honored only at frame boundaries, and a trailing partial
-    frame at EOF/kill is dropped, so the pipe always stays frame-aligned.
-    `initial` carries bytes already read during warmup.
-    Returns 'eof' on natural end, 'interrupted' if stopped, 'pipe_lost' if a
-    write fails (reader died).
+    Runs until shutdown or until a write fails (reader died), which sets
+    _pipe_lost so the main loop can reopen the pipe and restart a fresh pacer.
     """
-    buf = bytearray(initial)
-    while not stop_event.is_set():
+    period = 1.0 / FPS
+    next_t = time.monotonic()
+    while not _shutdown.is_set():
         try:
-            while len(buf) >= FRAME_BYTES:
-                frame = bytes(buf[:FRAME_BYTES])
-                _write_all(pipe_fd, frame)
-                _last_frame[0] = frame
-                del buf[:FRAME_BYTES]
-            chunk = proc.stdout.read(CHUNK)
-            if not chunk:
-                # EOF: drop any partial trailing frame rather than misalign the pipe.
-                if buf:
-                    print(f"[video] dropping {len(buf)} partial-frame bytes at EOF", flush=True)
-                return "eof"
-            buf.extend(chunk)
+            _write_all(pipe_fd, _latest_frame[0])
         except OSError as e:
-            print(f"[video] pipe write error: {e}", flush=True)
-            return "pipe_lost"
+            print(f"[video] pacer pipe write error: {e}", flush=True)
+            _pipe_lost.set()
+            return
+        next_t += period
+        ahead = next_t - time.monotonic()
+        if ahead > 0:
+            time.sleep(ahead)
+        else:
+            next_t = time.monotonic()  # fell behind; resync, don't burst to catch up
+
+
+def feed_slot(proc, stop_event):
+    """Read whole frames from the decoder and publish each into the latest slot.
+
+    Only complete frames reach the slot (partial trailing bytes are held until
+    they fill). Returns 'eof' on natural decoder end, 'interrupted' if stopped.
+    """
+    buf = bytearray()
+    while not stop_event.is_set():
+        chunk = proc.stdout.read(CHUNK)
+        if not chunk:
+            return "eof"
+        buf.extend(chunk)
+        while len(buf) >= FRAME_BYTES:
+            _latest_frame[0] = bytes(buf[:FRAME_BYTES])
+            del buf[:FRAME_BYTES]
     return "interrupted"
 
 
@@ -143,16 +176,18 @@ def read_song_clock():
         return None
 
 
-def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC, ident_dur=0.0):
-    """Play one catalog entry into pipe_fd.
+def play_entry(entry, watch_song=False, dwell_sec=DWELL_SEC, ident_dur=0.0):
+    """Run one catalog entry's decoder, feeding the latest-frame slot.
 
-    If watch_song=True, cut at song boundaries (after dwell_sec of play):
-    PREDICTIVELY when the song clock is available — the cut fires ident_dur
-    seconds BEFORE the boundary so the ident straddles it and the next piece
-    starts with the next song — or REACTIVELY (content change of SONG_FILE,
-    ~1-6s late) when the clock is absent.
+    The pacer (not this function) writes the pipe, so a decoder swap here never
+    interrupts supply. If watch_song=True, cut at song boundaries (after
+    dwell_sec of play): PREDICTIVELY when the song clock is available — the cut
+    fires ident_dur seconds BEFORE the boundary so the ident straddles it and
+    the next piece starts with the next song — or REACTIVELY (content change of
+    SONG_FILE) when the clock is absent.
     Returns ('eof', elapsed) on natural file end, ('boundary', elapsed) on cut,
-    or ('pipe_lost', elapsed) when the pipe write fails (reader died).
+    ('pipe_lost', elapsed) if the pacer reported a dead reader, or
+    ('interrupted', elapsed) on shutdown.
     """
     filepath = entry["file"]
     eid      = entry["id"]
@@ -161,52 +196,15 @@ def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC, ident_dur=
           f"ts={now_str}", flush=True)
 
     proc = spawn_decoder(filepath)
-    _current_decoder_proc[0] = proc  # so the signal handler can kill it
+    _current_decoder_proc[0] = proc
     stop_event = threading.Event()
     start_mono = time.monotonic()
     start_wall = time.time()
 
-    # Decoder warmup bridge: until this decoder yields its first full frame
-    # (-re startup takes ~0.2-0.5s), keep the pipe fed by repeating the
-    # previous piece's last frame at 60 fps. An empty pipe stalls the master
-    # ffmpeg and underruns the live stream at every transition.
-    warm = bytearray()
-    out_fd = proc.stdout.fileno()
-    os.set_blocking(out_fd, False)
-    next_tick = time.monotonic()
-    try:
-        while len(warm) < FRAME_BYTES:
-            chunk = proc.stdout.read(CHUNK)
-            if chunk:
-                warm.extend(chunk)
-                continue
-            if chunk == b"":
-                break  # decoder exited before producing a frame
-            if _last_frame[0] is not None:
-                now = time.monotonic()
-                if now >= next_tick:
-                    _write_all(pipe_fd, _last_frame[0])
-                    next_tick = max(next_tick + 1.0 / FPS, now - 0.1)
-                else:
-                    time.sleep(min(next_tick - now, 0.005))
-            else:
-                time.sleep(0.005)
-    except OSError as e:
-        print(f"[video] pipe write error during warmup: {e}", flush=True)
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except Exception:
-            proc.kill()
-        print(f"[video] END id={eid} reason=pipe_lost elapsed=0.0s", flush=True)
-        return "pipe_lost", 0.0
-    os.set_blocking(out_fd, True)
-
-    # Stream in a background thread so the main thread can poll SONG_FILE.
-    stream_result = [None]  # mutable container for thread return value
-    def _stream():
-        stream_result[0] = stream_to_pipe(proc, pipe_fd, stop_event, initial=bytes(warm))
-    t = threading.Thread(target=_stream, daemon=True)
+    feed_result = [None]
+    def _run_feed():
+        feed_result[0] = feed_slot(proc, stop_event)
+    t = threading.Thread(target=_run_feed, daemon=True)
     t.start()
 
     last_song = read_song_file() if watch_song else None
@@ -214,19 +212,16 @@ def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC, ident_dur=
 
     try:
         while t.is_alive():
-            # 100ms poll: EOF detection latency is dead air in the video pipe
-            # (the bridge only runs during the NEXT entry's warmup), and at
-            # 1s it was draining YouTube's buffer at every ident transition.
+            # 100ms poll: boundary/EOF detection latency. The pacer keeps the
+            # pipe fed regardless, so this only affects cut timing precision.
             time.sleep(0.1)
-            elapsed = time.monotonic() - start_mono
-
-            # Check if the streaming thread detected a pipe failure.
-            if stream_result[0] == "pipe_lost":
+            if _pipe_lost.is_set():
                 reason = "pipe_lost"
-                stop_event.set()
-                proc.terminate()
-                t.join(timeout=5)
                 break
+            if _shutdown.is_set():
+                reason = "interrupted"
+                break
+            elapsed = time.monotonic() - start_mono
 
             if watch_song:
                 clock = read_song_clock()
@@ -241,35 +236,30 @@ def play_entry(entry, pipe_fd, watch_song=False, dwell_sec=DWELL_SEC, ident_dur=
                         print(f"[video] SCHED_CUT boundary_in={boundary - now_wall:.1f}s "
                               f"ident_dur={ident_dur:.1f}s song={clock.get('file', '?')}",
                               flush=True)
-                        stop_event.set()
-                        proc.terminate()
-                        t.join(timeout=5)
                         break
                 else:
                     # Reactive fallback: notice the song already changed.
                     current_song = read_song_file()
                     if current_song != last_song and elapsed >= dwell_sec:
                         reason = "boundary"
-                        stop_event.set()
-                        proc.terminate()
-                        t.join(timeout=5)
                         break
                     # Update last_song even if dwell not reached, so the *next*
                     # eligible check catches the boundary that's already been crossed.
                     if current_song != last_song:
                         last_song = current_song
-
-        # If the thread finished naturally, check for pipe_lost set at EOF path.
-        if reason == "eof" and stream_result[0] == "pipe_lost":
-            reason = "pipe_lost"
     finally:
+        # SIGKILL, not terminate: a disposable mid-piece decoder needs no
+        # graceful flush, and ffmpeg under -re can sit ~5s ignoring SIGTERM
+        # (blocked between paced frames) — that delay pushed every boundary
+        # cut 5s late, missing the song boundary it was scheduled for.
         stop_event.set()
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        proc.wait()
+        t.join(timeout=5)
 
     elapsed = time.monotonic() - start_mono
     print(f"[video] END id={eid} reason={reason} elapsed={elapsed:.1f}s", flush=True)
@@ -293,10 +283,6 @@ def pick_ident(idents):
     if not idents:
         return None
     return random.choice(idents)
-
-
-_shutdown = threading.Event()
-_current_decoder_proc = [None]  # for SIGTERM handler
 
 
 def _handle_signal(signum, frame):
@@ -326,7 +312,10 @@ def main():
     print(f"[video] waiting for reader to open {VIDEO_PIPE} ...", flush=True)
     # os.open with O_WRONLY blocks until the read end is opened — that's correct.
     pipe_fd = os.open(VIDEO_PIPE, os.O_WRONLY)
-    print(f"[video] pipe open, starting playback", flush=True)
+    print(f"[video] pipe open, starting pacer + playback", flush=True)
+
+    pacer = threading.Thread(target=pacer_loop, args=(pipe_fd,), daemon=True)
+    pacer.start()
 
     order    = make_shuffled_order(pieces)
     idx      = 0
@@ -339,26 +328,31 @@ def main():
 
         entry  = pieces[order[idx]]
         # Pre-pick the transition ident: the predictive scheduler needs its
-        # duration to start the cut early enough for the ident to straddle
-        # the song boundary.
+        # duration to start the cut early enough for the ident to straddle the
+        # song boundary.
         next_ident = pick_ident(idents)
         next_ident_dur = float(next_ident["duration_sec"]) if next_ident else 0.0
-        reason, _ = play_entry(entry, pipe_fd, watch_song=True, dwell_sec=DWELL_SEC,
+        reason, _ = play_entry(entry, watch_song=True, dwell_sec=DWELL_SEC,
                                ident_dur=next_ident_dur)
 
         if _shutdown.is_set():
             break
 
         if reason == "pipe_lost":
-            # Reader (master ffmpeg) died. close the broken fd, wait for a new reader.
+            # Reader (master ffmpeg) died. The pacer already exited; reopen the
+            # pipe (blocks until a new reader appears) and start a fresh pacer.
             print(f"[video] pipe_lost — closing fd and waiting for new reader on "
                   f"{VIDEO_PIPE} ...", flush=True)
             try:
                 os.close(pipe_fd)
             except OSError:
                 pass
-            # Block until the new reader opens the pipe (start.sh restarts ffmpeg).
+            pacer.join(timeout=5)
+            _latest_frame[0] = _BLACK_FRAME
             pipe_fd = os.open(VIDEO_PIPE, os.O_WRONLY)
+            _pipe_lost.clear()
+            pacer = threading.Thread(target=pacer_loop, args=(pipe_fd,), daemon=True)
+            pacer.start()
             print("[video] pipe reopened, resuming playback (replaying current piece)",
                   flush=True)
             # Do NOT advance idx — replay the same piece from the beginning.
@@ -368,14 +362,17 @@ def main():
         idx    += 1
 
         if reason in ("boundary", "eof"):
-            # Every piece transition gets an ident — it's what makes a cut
-            # read as intentional. Play the PRE-PICKED ident: the scheduler
-            # timed the cut so this exact ident's duration lands the next
-            # piece on the song boundary.
+            # Every piece transition gets an ident — it's what makes a cut read
+            # as intentional. Play the PRE-PICKED ident: the scheduler timed the
+            # cut so this exact ident's duration lands the next piece on the
+            # song boundary.
             if next_ident:
-                play_entry(next_ident, pipe_fd, watch_song=False)
+                play_entry(next_ident, watch_song=False)
 
-    os.close(pipe_fd)
+    try:
+        os.close(pipe_fd)
+    except OSError:
+        pass
     print("[video] shutdown complete", flush=True)
 
 

@@ -26,19 +26,16 @@ as the system goes to production, in the order they'll likely bite:
    per full catalog. Feeds the cloud-rendering item below; also worth one session
    profiling WHY xvfb is slower.
 
-### Video pacer thread (playout) — first task of next playout session
-video_player.py: a single wall-clock pacer thread owns all pipe writes at exactly
-60fps from a latest-frame slot; decoders feed the slot. Makes video supply
-structurally constant through transitions/warmups/EOF (subsumes the held-frame
-bridge), ending the videoIngestionStarved dips that flap YouTube's health grade
-when transitions are frequent. Verified need: 2026-06-11 live session — supply
-dips ~0.2-0.4s per transition survive all micro-optimizations. PLUS: -re decoder
-pacing runs slightly sub-realtime, draining YouTube's player buffer (~30-40s to
-empty) — the all-night "dies after 30s" symptom. Production precedent: galton's
-x11grab input IS a wall-clock pacer (samples the display at exactly 30fps
-regardless of render state) — the pacer thread restores that invariant for
-file-decoder playout. Audio side already has production parity (-re + queue 8 on
-the pipe input; see queue_blocking_report.md for why big queues hide drift).
+### ~~Video pacer thread (playout)~~ — DONE 2026-06-16
+Implemented in video_player.py: a wall-clock-capped pacer thread owns all pipe
+writes from a latest-frame slot; decoders feed the slot under -re. Backpressure
+sets the floor (slot never empty → ffmpeg never starves → output never drops
+below realtime, fixing the buffer drain), wall-clock sleep sets the ceiling.
+Subsumes the held-frame bridge. Also fixed a 5s decoder-teardown lag (ffmpeg
+under -re ignores SIGTERM ~5s; now SIGKILL) that was pushing every boundary cut
+5s late. Verified: realtime-drain consumer pulls a flat 60fps across transitions
+(1560 frames / 26.000s), cuts fire on the song boundary, frames stay aligned.
+NOT YET tested on a real YouTube broadcast (next playout session).
 
 ## Infrastructure
 
