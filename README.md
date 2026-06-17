@@ -125,17 +125,28 @@ skipped; writes are atomic), and ~3× realtime under xvfb on a 3080 Ti.
 
 ## Video playout (scripts/playout/)
 
-Mirrors the music architecture: `video_player.py` decodes the current catalog piece to
-raw frames in a named pipe (`/tmp/video_pipe`), and `playout.sh` runs the master ffmpeg
-muxing video pipe + audio pipe + song-title overlay (drawtext, `reload=1`) to FLV — a
-local file by default, RTMP to YouTube when `YOUTUBE_STREAM_KEY` is set. (FLV because
-RTMP *is* FLV-over-TCP, and truncated FLV stays playable.)
+Mirrors the music architecture: `video_player.py` decodes catalog pieces to raw frames
+in a named pipe (`/tmp/video_pipe`), and `playout.sh` runs the master ffmpeg muxing
+video pipe + audio pipe + song-title overlay (drawtext, `reload=1`) to FLV — a local
+file by default, RTMP to YouTube when `YOUTUBE_STREAM_KEY` is set. (FLV because RTMP
+*is* FLV-over-TCP, and truncated FLV stays playable.)
 
-Transitions happen at **song boundaries**: `video_player.py` watches
-`/tmp/current_song.txt` at 1 Hz; at the first song change after `DWELL_SEC` (default
-900) it cuts to a random ident, then the next shuffled piece. A piece that ends
-naturally (EOF before a boundary) also transitions through an ident. If the master
-ffmpeg dies/restarts, the player reopens the pipe and replays the current piece.
+**Pacer model (the supply invariant):** a single wall-clock pacer thread owns every
+write to the video pipe, emitting the most recent decoded frame at a 60fps ceiling from
+a latest-frame slot. Decoders run under `-re` and only feed the slot — they never touch
+the pipe. The slot is always full (black frame, then last decoded frame), so the master
+ffmpeg never blocks on an empty video pipe and its output never drops below realtime
+(the old direct-write model under-supplied at transitions and slowly drained YouTube's
+buffer — the "stream dies after ~30s" symptom). This is the same invariant galton gets
+free from x11grab, which samples the display at a fixed wall-clock rate. Disposable
+mid-piece decoders are SIGKILLed (ffmpeg under `-re` ignores SIGTERM for ~5s).
+
+Transitions happen at **song boundaries**: `video_player.py` cuts at the first boundary
+after `DWELL_SEC` (default 900) — predictively from the music player's song clock, or
+reactively by watching `/tmp/current_song.txt` — to a random ident, then the next
+shuffled piece. A piece that ends naturally (EOF before a boundary) also transitions
+through an ident. If the master ffmpeg dies/restarts, the player reopens the pipe,
+restarts the pacer, and replays the current piece.
 
 ```bash
 # everything (music + titles + playout) in one command:
