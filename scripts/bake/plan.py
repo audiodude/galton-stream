@@ -49,3 +49,128 @@ def song_boundaries(timeline: list[dict]) -> list[float]:
 
 def build_subtitles(timeline: list[dict]) -> list[dict]:
     return [{"text": e["title"], "start": e["start"], "end": e["end"]} for e in timeline]
+
+
+def ffprobe_duration(path: str) -> float:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        capture_output=True, text=True, check=True)
+    return float(out.stdout.strip())
+
+
+def build_edl(pieces, idents, boundaries, show_dur, dwell, straddle) -> list[dict]:
+    edl = []
+    t = 0.0
+    pi = ii = 0
+    while t < show_dur - 1e-6:
+        piece = pieces[pi % len(pieces)]; pi += 1
+        cut_at = next((b for b in boundaries if b >= t + dwell), None)
+        if cut_at is None or cut_at >= show_dur:
+            edl.append({"kind": "piece", "src": piece["src"], "in": 0.0,
+                        "out": round(show_dur - t, 3), "tl_start": round(t, 3)})
+            break
+        ident = idents[ii % len(idents)]; ii += 1
+        if straddle:
+            istart, iend = cut_at - ident["dur"] / 2, cut_at + ident["dur"] / 2
+        else:
+            istart, iend = cut_at, cut_at + ident["dur"]
+        istart = max(istart, t)
+        edl.append({"kind": "piece", "src": piece["src"], "in": 0.0,
+                    "out": round(istart - t, 3), "tl_start": round(t, 3)})
+        edl.append({"kind": "ident", "src": ident["src"], "in": 0.0,
+                    "out": round(min(ident["dur"], show_dur - istart), 3),
+                    "tl_start": round(istart, 3)})
+        t = iend
+    return edl
+
+
+def _sha(parts) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    for p in parts:
+        h.update(str(p).encode())
+    return h.hexdigest()[:16]
+
+
+def build_plan(catalog: dict, library: list[dict], config: dict) -> dict:
+    seed = int(config["seed"])
+    show_dur = float(config["show_dur_sec"])
+    dwell = float(config["dwell_sec"])
+    straddle = bool(config.get("straddle", True))
+
+    # Music: shuffle (seeded, no immediate repeat), build timeline to >= show_dur.
+    ordered = shuffle(library, seed=seed, no_repeat=True)
+    timeline = build_music_timeline(ordered, target_dur=show_dur)
+    real_dur = timeline[-1]["end"] if timeline else 0.0   # exact end of the audio
+    boundaries = song_boundaries(timeline)
+    subs = build_subtitles(timeline)
+
+    # DWELL constraint: a piece segment is at most dwell + the longest song; it must
+    # fit within the shortest piece source. Fail loudly if violated.
+    max_song = max((e["end"] - e["start"] for e in timeline), default=0.0)
+    min_piece = min((float(p["dur"]) for p in catalog["pieces"]), default=0.0)
+    if dwell + max_song > min_piece + 1e-6:
+        raise ValueError(
+            f"DWELL constraint violated: dwell({dwell}) + max_song({max_song:.1f}) "
+            f"> min_piece({min_piece:.1f}). Lower dwell_sec or use longer pieces.")
+
+    pieces = shuffle([{"src": p["file"], "dur": float(p["dur"])} for p in catalog["pieces"]],
+                     seed=seed + 1, no_repeat=True)
+    idents = shuffle([{"src": i["file"], "dur": float(i["dur"])} for i in catalog["idents"]],
+                     seed=seed + 2)
+    edl = build_edl(pieces, idents, boundaries, real_dur, dwell, straddle)
+
+    return {
+        "seed": seed,
+        "fps": int(config["fps"]),
+        "resolution": str(config["resolution"]),
+        "show_dur_sec": round(real_dur, 3),
+        "music": timeline,
+        "edl": edl,
+        "subtitles": subs,
+        "catalog_sha": _sha(sorted(p["file"] for p in catalog["pieces"]) +
+                            sorted(i["file"] for i in catalog["idents"])),
+        "library_sha": _sha(sorted(t["file"] for t in library)),
+    }
+
+
+def _load_catalog(path: str) -> dict:
+    with open(path) as f:
+        data = json.load(f)
+    pieces = [{"file": e["file"], "dur": ffprobe_duration(e["file"])}
+              for e in data["pieces"] if e["kind"] == "piece"]
+    idents = [{"file": e["file"], "dur": ffprobe_duration(e["file"])}
+              for e in data["pieces"] if e["kind"] == "ident"]
+    return {"pieces": pieces, "idents": idents}
+
+
+def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--catalog", required=True)
+    ap.add_argument("--library-dir", required=True)
+    ap.add_argument("--seed", type=int, required=True)
+    ap.add_argument("--show-dur", type=float, required=True)
+    ap.add_argument("--dwell", type=float, default=600.0)
+    ap.add_argument("--fps", type=int, default=60)
+    ap.add_argument("--resolution", default="1280x720")
+    ap.add_argument("--straddle", action="store_true", default=True)
+    ap.add_argument("--out", required=True)
+    a = ap.parse_args()
+
+    import glob
+    catalog = _load_catalog(a.catalog)
+    library = [{"file": p, "title": title_from_path(p), "dur": ffprobe_duration(p)}
+               for p in sorted(glob.glob(os.path.join(a.library_dir, "*.mp3")))]
+    cfg = {"seed": a.seed, "show_dur_sec": a.show_dur, "dwell_sec": a.dwell,
+           "fps": a.fps, "resolution": a.resolution, "straddle": a.straddle}
+    plan_doc = build_plan(catalog, library, cfg)
+    with open(a.out, "w") as f:
+        json.dump(plan_doc, f, indent=2)
+    print(f"[plan] wrote {a.out}: {len(plan_doc['edl'])} edl segs, "
+          f"{len(plan_doc['music'])} songs, show_dur={plan_doc['show_dur_sec']:.1f}s")
+
+
+if __name__ == "__main__":
+    main()
