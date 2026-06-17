@@ -209,15 +209,20 @@ show is born on local disk and the next time those bytes move is straight to
 YouTube. The catalog pieces + music are bake *inputs* — small, reused for weeks,
 synced from S3 and cached locally — not in the daily hot path.
 
-**Production box (decided):** **Hetzner AX42** — Ryzen 7 8700GE, 8 cores / 16
-threads (Zen4), ~€48/mo, ~20 TB traffic included. It nightly syncs catalog+music
-deltas from S3, runs `plan.py` + `assemble` → `show.mkv` on local disk, then during
-the window stream-copies to YouTube and runs `monitor.py` against **localhost**
+**Production box (provisioned):** **Hetzner Cloud CCX33** — 8 dedicated vCPU, 32 GB,
+240 GB, ~€49/mo, 20 TB traffic. Provisioned via `hcloud` (the authed CLI in this
+environment) — `radio-playout`, IPv4 `5.78.198.233`, Ubuntu 24.04, location `hil`
+(Hillsboro, US-West — near the us-west-1 S3 bucket; IPv4 enabled, required for the
+RTMP push after the IPv6-blackhole lesson). It nightly syncs catalog+music deltas
+from S3, runs `plan.py` + `assemble` → `show.mkv` on local disk, then during the
+window stream-copies to YouTube and runs `monitor.py` against **localhost**
 (colocation makes the health poll trivial — no internal DNS or tunnel). 0.78 TB/mo
 of YouTube egress sits far inside the included traffic → **$0 marginal egress**,
-flat predictable bill. Note the 8700GE has an **RDNA3 iGPU with a VCN encoder** —
-a VAAPI hardware-encode fallback for the bake if CPU x264 ever runs tight (quality
-permitting). The bake-fit measurement (below) governs the preset choice on this box.
+flat predictable bill. Chosen over the AX42 Robot dedicated because the available
+token is Hetzner *Cloud* (API-provisionable now) and 720p60 (day-one target) bakes
+comfortably; CCX33's 8 *vCPU* make 1080p60 `medium` tight (see bake-fit below) — if
+the 1080p60 bake overruns, drop the preset, or migrate to an AX42/CCX43 (config +
+scripts only, the box is interchangeable).
 
 **Why not Railway / per-GB providers:** a per-GB egress model double-charges the big
 daily artifact (S3→box, then box→YouTube). At 1080p60 that round-trip is
