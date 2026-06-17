@@ -30,9 +30,10 @@ def write_ass(subs: list[dict], path: str, resolution: str):
         "[Events]\nFormat: Layer, Start, End, Style, Text\n")
     lines = []
     for c in subs:
-        # fade in 300ms, hold, fade to dim handled by player; keep simple here
+        # fade in 300ms; the note must be the literal ♪ glyph — ASS has no
+        # \u escape, so "♪" would render verbatim (the original bug).
         lines.append(f"Dialogue: 0,{_ass_t(c['start'])},{_ass_t(c['end'])},t,"
-                     f"{{\\fad(300,300)}}\\u266a {c['text']}")
+                     f"{{\\fad(300,300)}}♪ {c['text']}")
     with open(path, "w") as f:
         f.write(head + "\n".join(lines) + "\n")
 
