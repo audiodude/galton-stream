@@ -52,8 +52,11 @@ problems are *defined out of existence* here rather than managed.
    boundary, frame-accurate, burned in.
 4. **Reproducible.** Same seeds + same catalog + same library → byte-identical
    plan manifest (and a re-bake reproduces an equivalent show).
-5. **Quality.** 720p60, offline-encoded at a quality the live encoder couldn't
-   afford.
+5. **Quality.** Offline-encoded at a quality the live encoder couldn't afford.
+   Resolution-agnostic: ship **720p60** first (the current catalog is 1280×720),
+   **1080p60 is the eventual target** (re-render the catalog at 1080p — the render
+   already captures native 1080p before downscaling — same bake/playout pipeline,
+   only the box must be sized for the heavier 1080p60 bake; see Deployment).
 6. **Survivable.** A missing/invalid daily bake falls back to a prior valid show
    rather than dead air.
 
@@ -192,16 +195,70 @@ complete, health escalation, and the radio redirect. Pre-bake removes the
 *stream-health* cause of the 22 s death (a clean copy ingests healthy); the
 lifecycle plumbing the monitor already handles is orthogonal and stays.
 
-## Scheduling (6 h/day)
+## Deployment topology
 
-Bake **ahead of** the operational window (overnight cron, or T-minus-hours trigger);
-at window open, `playout.sh` streams the prepared file and `monitor.py` brings the
-broadcast live. `show_dur_sec` = operational-window length (≈ 11:45–18:05 PT =
-6 h 20 m) so warmup→cooldown is covered. With a full pre-bake there is **no
-head-start buffer needed** — the entire show is on disk before streaming begins. (A
-just-in-time variant — start baking at T-30, stream once buffered — is a valid
-fallback if bake ever runs same-day; a 10–30 min head start covers bake-vs-realtime
-jitter. Not the default.)
+**Production is fully remote; the desktop is the debug loop only.**
+
+### Colocate bake + stream on one flat-traffic box
+
+The decisive cost fact: streaming to YouTube RTMP is itself egress and is
+**irreducible** — ~0.78 TB/mo at 1080p60/9 Mbps (~0.5 TB at 720p60) leaves whatever
+box streams, no matter what. The only architectural choice is whether to *add* an
+S3 round-trip on top. **Colocating bake and stream on one box eliminates it**: the
+show is born on local disk and the next time those bytes move is straight to
+YouTube. The catalog pieces + music are bake *inputs* — small, reused for weeks,
+synced from S3 and cached locally — not in the daily hot path.
+
+**Production box:** one remote host with **included/flat traffic** (e.g. a Hetzner
+dedicated CPU server, ~€50/mo, 16+ threads, ~20 TB traffic included) that nightly
+syncs catalog+music deltas from S3, runs `plan.py` + `assemble` → `show.mkv` on
+local disk, then during the window stream-copies to YouTube and runs `monitor.py`
+against **localhost** (colocation makes the health poll trivial — no internal DNS
+or tunnel). 0.78 TB/mo of YouTube egress sits far inside the included traffic →
+**$0 marginal egress**, flat predictable bill.
+
+**Why not Railway / per-GB providers:** a per-GB egress model double-charges the big
+daily artifact (S3→box, then box→YouTube). At 1080p60 that round-trip is
+**~$123/mo** (≈$70 of it the pure S3→Railway waste) vs. **~€50/mo flat** colocated.
+At 720p60 it's ~$60 vs ~€25. The per-GB model is the wrong tool for a ~0.8 TB/mo
+artifact; the gap only widens with resolution.
+
+**Bake compute (the 1080p60 constraint):** the nightly bake must finish in the
+~17.5 h gap (18:05 → 11:45). 720p60 x264 `medium` on ~8 vCPU is comfortable. 1080p60
+is ~2.25× the pixels — x264 `medium` on 8 vCPU runs ~0.3–0.7× realtime (~9–21 h for
+a 6 h 20 m show), which may *not* fit. Mitigations, in order of preference:
+(1) a faster preset (`fast`/`veryfast` — still far better than the live `ultrafast`);
+(2) a bigger flat-fee box (16+ threads bakes 1080p60 overnight at a good preset —
+the default); (3) an **NVENC burst** (a RunPod-class 4090, ~no egress, bakes
+1080p60 in ~30–60 min for ~$15/mo) feeding a cheap CPU streamer — best if fast
+iteration is also wanted, at the cost of one GPU→streamer transfer (≈free on
+no-egress providers). Size the production box for the 1080p60 case so it needn't be
+replaced when we move up from 720p60.
+
+**Catalog render stays separate.** Rendering the generative pieces is Godot/GPU work,
+infrequent, and reused for weeks — desktop (debug) or a cloud-GPU burst (the render
+TODO), pushed to S3 once. It is *not* on the daily playout path.
+
+**galton-stream** stays on Railway for now; vxstory pre-baked playout proves out
+standalone on the cheap box. Consolidating both onto one host is a later, separate
+decision.
+
+### Where the show lives
+
+S3 is the show's **system-of-record** (`show-YYYY-MM-DD.mkv` + `show-…plan.json`,
+~3-day retention for the fallback); the production box holds the **working copy** on
+local disk. (With colocated bake the working copy *is* the bake output; the S3 copy
+is durability + fallback source for other boxes.)
+
+### Scheduling
+
+Bake **ahead of** the window (overnight cron, or T-minus-hours trigger); at window
+open `playout.sh` streams the prepared file and `monitor.py` brings the broadcast
+live. `show_dur_sec` = operational-window length (≈ 11:45–18:05 PT = 6 h 20 m) so
+warmup→cooldown is covered. With a full pre-bake there is **no head-start buffer
+needed** — the whole show is on disk before streaming begins. (A just-in-time
+variant — start baking at T-30, stream once buffered — is a valid fallback if bake
+ever runs same-day; 10–30 min covers bake-vs-realtime jitter. Not the default.)
 
 ## Tradeoffs & Notes
 
@@ -222,9 +279,11 @@ jitter. Not the default.)
 
 ## Risks
 
-- **Bake time vs. window.** A slow-preset 6 h 720p60 encode may run near or below
-  realtime on CPU. Mitigations: overnight bake (we have all night), NVENC, or the
-  JIT+head-start variant. The plan should measure actual bake throughput early.
+- **Bake time vs. window** (the binding 1080p60 constraint). Must finish in ~17.5 h
+  (18:05 → 11:45). 720p60 is comfortable on ~8 vCPU; 1080p60 `medium` may not fit on
+  a small box. Mitigations: faster preset, a 16+-thread box, or an NVENC burst (see
+  Deployment). **The plan must measure real bake throughput at both resolutions
+  early** and pin the preset/box size from data, not guesses.
 - **assemble topology complexity** (many segments). Mitigate by prototyping the
   segment-then-concat path and validating concat-copy seams (closed GOP, identical
   codec params).
