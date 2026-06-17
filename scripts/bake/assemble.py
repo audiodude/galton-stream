@@ -65,14 +65,18 @@ def assemble(plan_path: str, out_path: str):
     write_ass(p["subtitles"], ass, res)
 
     video = os.path.join(work, "video.mkv")
+    _br = os.environ.get("BAKE_VBITRATE", "6M")
     _run(["ffmpeg", "-y", "-loglevel", "warning",
           "-f", "concat", "-safe", "0", "-i", vlist,
           "-vf", f"subtitles='{ass}',scale={res.replace('x',':')}:flags=lanczos,fps={fps}",
           "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
           "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
-          "-b:v", os.environ.get("BAKE_VBITRATE", "6M"),
-          "-maxrate", os.environ.get("BAKE_VBITRATE", "6M"),
-          "-bufsize", os.environ.get("BAKE_VBUF", "12M"),
+          # CBR: minrate=maxrate=b:v + nal-hrd=cbr forces a STEADY wire bitrate.
+          # VBR (-b:v/-maxrate only) let dark scenes + the near-black ident dip to
+          # a few hundred kbps, tripping YouTube's "Video output low" and ending
+          # the broadcast. CBR also spends those bits on quality (less banding).
+          "-b:v", _br, "-minrate", _br, "-maxrate", _br,
+          "-bufsize", _br, "-x264-params", "nal-hrd=cbr",
           "-an", video])
 
     # --- audio concat (full tracks, in playlist order) ---
