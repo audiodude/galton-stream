@@ -97,3 +97,115 @@ def is_recent(b, now, max_age_min=15):
     except (ValueError, TypeError):
         return False
     return (now - t) < datetime.timedelta(minutes=max_age_min)
+
+
+# --- lifecycle ops ---
+
+def get_owned_stream_id():
+    global _owned_stream_id
+    if _owned_stream_id:
+        return _owned_stream_id
+    if not YOUTUBE_STREAM_KEY:
+        _log("YOUTUBE_STREAM_KEY unset; cannot resolve owned stream")
+        return None
+    result = api(f"{API}/liveStreams?part=id,cdn&mine=true&maxResults=50")
+    if not result:
+        return None
+    for s in result.get("items", []):
+        if s.get("cdn", {}).get("ingestionInfo", {}).get("streamName") == YOUTUBE_STREAM_KEY:
+            _owned_stream_id = s.get("id")
+            _log(f"Resolved owned stream {_owned_stream_id} from key")
+            return _owned_stream_id
+    _log("No liveStream matches YOUTUBE_STREAM_KEY")
+    return None
+
+
+def list_broadcasts():
+    out = []
+    for status in ("active", "upcoming"):
+        r = api(f"{API}/liveBroadcasts?part=snippet,status,contentDetails"
+                f"&broadcastStatus={status}&maxResults=10")
+        if r:
+            out.extend(r.get("items", []))
+    return out
+
+
+def stream_status(stream_id):
+    r = api(f"{API}/liveStreams?part=status&id={stream_id}")
+    items = (r or {}).get("items", [])
+    if not items:
+        return ("", "")
+    st = items[0].get("status", {})
+    return (st.get("streamStatus", ""), st.get("healthStatus", {}).get("status", ""))
+
+
+def ensure_broadcast(stream_id):
+    body = {
+        "snippet": {
+            "title": BROADCAST_TITLE,
+            "description": BROADCAST_DESCRIPTION,
+            "scheduledStartTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        },
+        "status": {"privacyStatus": BROADCAST_PRIVACY, "selfDeclaredMadeForKids": False},
+        "contentDetails": {
+            "enableAutoStart": False, "enableAutoStop": False,
+            "latencyPreference": "ultraLow", "enableDvr": False,
+        },
+    }
+    result = api(f"{API}/liveBroadcasts?part=snippet,status,contentDetails",
+                 method="POST", body=body)
+    if not result:
+        _log("ensure_broadcast: create failed")
+        return None
+    bid = result.get("id")
+    bind = api(f"{API}/liveBroadcasts/bind?part=id,contentDetails&id={bid}&streamId={stream_id}",
+               method="POST")
+    if bind:
+        _log(f"Created+bound broadcast {bid} -> {stream_id}")
+    return bid
+
+
+def go_live(broadcast_id):
+    return _transition(broadcast_id, "live")
+
+
+def end_broadcast(broadcast_id):
+    ok = _transition(broadcast_id, "complete")
+    _set_privacy(broadcast_id, "private")
+    return ok
+
+
+def _transition(broadcast_id, target):
+    r = api(f"{API}/liveBroadcasts/transition?part=id,status&id={broadcast_id}"
+            f"&broadcastStatus={target}", method="POST")
+    if r:
+        _log(f"Transitioned broadcast {broadcast_id} -> {target}")
+        return True
+    return False
+
+
+def _set_privacy(broadcast_id, privacy):
+    cur = api(f"{API}/liveBroadcasts?part=snippet,status&id={broadcast_id}")
+    if not cur or not cur.get("items"):
+        return False
+    snip = cur["items"][0].get("snippet", {})
+    body = {"id": broadcast_id,
+            "snippet": {"title": snip.get("title", ""),
+                        "scheduledStartTime": snip.get("scheduledStartTime", "1970-01-01T00:00:00Z")},
+            "status": {"privacyStatus": privacy}}
+    return api(f"{API}/liveBroadcasts?part=snippet,status", method="PUT", body=body) is not None
+
+
+def delete_broadcast(broadcast_id):
+    token = get_access_token()
+    if not token:
+        return False
+    try:
+        req = urllib.request.Request(f"{API}/liveBroadcasts?id={broadcast_id}",
+                                     method="DELETE", headers={"Authorization": f"Bearer {token}"})
+        urllib.request.urlopen(req, timeout=15)
+        _log(f"Deleted broadcast {broadcast_id}")
+        return True
+    except Exception as e:
+        _log(f"delete_broadcast {broadcast_id} failed: {e}")
+        return False
