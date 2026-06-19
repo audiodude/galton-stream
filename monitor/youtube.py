@@ -162,7 +162,9 @@ def ensure_broadcast(stream_id):
                method="POST")
     if bind:
         _log(f"Created+bound broadcast {bid} -> {stream_id}")
-    return bid
+        return bid
+    delete_broadcast(bid)
+    return None
 
 
 def go_live(broadcast_id):

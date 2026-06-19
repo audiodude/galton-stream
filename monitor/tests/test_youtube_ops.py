@@ -53,3 +53,12 @@ def test_end_broadcast_completes_then_private(monkeypatch):
     assert youtube.end_broadcast("B1") is True
     assert any("broadcastStatus=complete" in c[1] for c in rec.calls)
     assert any(c[0] == "PUT" and c[2] and c[2].get("status", {}).get("privacyStatus") == "private" for c in rec.calls)
+
+def test_ensure_broadcast_deletes_on_bind_failure(monkeypatch):
+    rec = Recorder({"liveBroadcasts?part=snippet,status,contentDetails": {"id": "B1"},
+                    "/bind": None})  # bind returns None (failure)
+    monkeypatch.setattr(youtube, "api", rec)
+    monkeypatch.setattr(youtube, "delete_broadcast", lambda bid: rec.calls.append(("DELETE", bid, None)))
+    bid = youtube.ensure_broadcast("S1")
+    assert bid is None
+    assert any(c == ("DELETE", "B1", None) for c in rec.calls)
