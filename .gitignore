@@ -21,3 +21,8 @@ override.cfg
 
 # Library cleanup workdir
 library_work/
+
+# Local playout/test artifacts (not for git)
+playout_test*.mp4
+nohup.out
+queue_blocking_report.md
