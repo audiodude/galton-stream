@@ -26,3 +26,4 @@ library_work/
 playout_test*.mp4
 nohup.out
 queue_blocking_report.md
+/CLAUDE.md
