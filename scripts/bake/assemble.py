@@ -7,6 +7,7 @@ playlist, encode AAC), mux (stream-copy both). One video encode pass total.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -48,10 +49,19 @@ def _run(cmd):
 
 
 def assemble(plan_path: str, out_path: str):
+    work = tempfile.mkdtemp(prefix="bake_")
+    try:
+        _assemble(plan_path, out_path, work)
+    finally:
+        # The intermediates are the size of the show itself (~16 GB) plus ~4 GB of
+        # normalized audio; leaving them behind fills the box in a few nights.
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _assemble(plan_path: str, out_path: str, work: str):
     with open(plan_path) as f:
         p = json.load(f)
     fps = int(p["fps"]); res = p["resolution"]; gop = 2 * fps
-    work = tempfile.mkdtemp(prefix="bake_")
 
     # --- video concat list (concat demuxer, frame-accurate via inpoint/outpoint) ---
     vlist = os.path.join(work, "video.txt")
@@ -79,11 +89,25 @@ def assemble(plan_path: str, out_path: str):
           "-bufsize", _br, "-x264-params", "nal-hrd=cbr",
           "-an", video])
 
-    # --- audio concat (full tracks, in playlist order) ---
+    # --- audio: normalize each track, then concat (playlist order) ---
+    # The concat demuxer can't switch decoder parameters mid-stream, and the
+    # library is not uniform: 48 kHz files, mono files, and at least one that is
+    # PCM wearing an .mp3 name. Feeding those straight to concat dropped a whole
+    # track from one night's show — 2:17 of dead air on air. So decode each song
+    # to identical PCM first, clamped to exactly the slot the plan gave it
+    # (apad fills a short decode, -t trims a long one), which also stops decode
+    # length from drifting away from the subtitle timings over 160+ songs.
+    norm = os.path.join(work, "audio")
+    os.makedirs(norm, exist_ok=True)
     alist = os.path.join(work, "audio.txt")
     with open(alist, "w") as f:
-        for song in p["music"]:
-            f.write(f"file '{os.path.abspath(song['file'])}'\n")
+        for i, song in enumerate(p["music"]):
+            wav = os.path.join(norm, f"{i:04d}.wav")
+            slot = round(float(song["end"]) - float(song["start"]), 3)
+            _run(["ffmpeg", "-y", "-loglevel", "error", "-i", os.path.abspath(song["file"]),
+                  "-vn", "-af", "apad", "-t", str(slot),
+                  "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", wav])
+            f.write(f"file '{wav}'\n")
     audio = os.path.join(work, "audio.m4a")
     _run(["ffmpeg", "-y", "-loglevel", "warning", "-f", "concat", "-safe", "0", "-i", alist,
           "-af", "volume=-7dB", "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2", audio])

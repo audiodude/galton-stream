@@ -19,4 +19,10 @@ tone() { ffmpeg -y -loglevel error -f lavfi -i "sine=f=$2:d=$3" -c:a libmp3lame 
 tone song-one.mp3 330 6
 tone song-two.mp3 440 5
 tone song-three.mp3 550 7
+# Off-spec members of the real library: a 48 kHz stereo track, and one that is
+# AIFF/PCM wearing an .mp3 name. Both broke the concat demuxer in production.
+ffmpeg -y -loglevel error -f lavfi -i "sine=f=660:d=6:r=48000" -ac 2 -ar 48000 \
+    -c:a libmp3lame "$DIR/music/song-four.mp3"
+ffmpeg -y -loglevel error -f lavfi -i "sine=f=770:d=6" -c:a pcm_s16be -f aiff \
+    "$DIR/music/song-five.mp3"
 echo "fixtures in $DIR"
