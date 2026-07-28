@@ -150,6 +150,11 @@ def ensure_broadcast(stream_id):
         "contentDetails": {
             "enableAutoStart": False, "enableAutoStop": False,
             "latencyPreference": "ultraLow", "enableDvr": False,
+            # YouTube defaults this ON, and a broadcast with a monitor stream
+            # cannot go ready -> live: it must pass through `testing` first, so
+            # every transition came back 403 invalidTransition and the station
+            # never went live. We own the lifecycle explicitly; no preview.
+            "monitorStream": {"enableMonitorStream": False},
         },
     }
     result = api(f"{API}/liveBroadcasts?part=snippet,status,contentDetails",
@@ -168,7 +173,12 @@ def ensure_broadcast(stream_id):
 
 
 def go_live(broadcast_id):
-    return _transition(broadcast_id, "live")
+    if _transition(broadcast_id, "live"):
+        return True
+    # A broadcast that already carries a monitor stream (created before we
+    # disabled it, or made by hand in Studio) has to go through `testing`.
+    # Start it here; the next poll finds it in `testing` and takes it live.
+    return _transition(broadcast_id, "testing")
 
 
 def end_broadcast(broadcast_id):

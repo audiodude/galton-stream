@@ -36,6 +36,8 @@ def test_ensure_broadcast_sets_autostop_false_autostart_false(monkeypatch):
     cd = create[2]["contentDetails"]
     assert cd["enableAutoStart"] is False and cd["enableAutoStop"] is False
     assert cd["enableDvr"] is False and cd["latencyPreference"] == "ultraLow"
+    # with a monitor stream, ready -> live is rejected 403 invalidTransition
+    assert cd["monitorStream"]["enableMonitorStream"] is False
     assert any("/bind" in c[1] and "streamId=S1" in c[1] for c in rec.calls)
 
 def test_go_live_transitions_to_live(monkeypatch):
@@ -43,6 +45,17 @@ def test_go_live_transitions_to_live(monkeypatch):
     monkeypatch.setattr(youtube, "api", rec)
     assert youtube.go_live("B1") is True
     assert any("broadcastStatus=live" in c[1] and "id=B1" in c[1] for c in rec.calls)
+
+def test_go_live_falls_back_to_testing_when_live_is_rejected(monkeypatch):
+    """Broadcasts carrying a monitor stream must pass through `testing`."""
+    calls = []
+    def api(url, method="GET", body=None):
+        calls.append(url)
+        return None if "broadcastStatus=live" in url else {"id": "B1"}
+    monkeypatch.setattr(youtube, "api", api)
+    assert youtube.go_live("B1") is True
+    assert any("broadcastStatus=live" in u for u in calls)
+    assert any("broadcastStatus=testing" in u for u in calls)
 
 def test_end_broadcast_completes_then_private(monkeypatch):
     rec = Recorder({"/transition": {"id": "B1"},
