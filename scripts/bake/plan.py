@@ -99,21 +99,26 @@ def build_plan(catalog: dict, library: list[dict], config: dict) -> dict:
     dwell = float(config["dwell_sec"])
     straddle = bool(config.get("straddle", True))
 
+    # DWELL constraint: a piece segment runs dwell + the rest of the current song,
+    # so it must fit within the shortest piece source. Songs too long to satisfy
+    # that are dropped from the show rather than failing the bake — the catalog's
+    # piece length is the hard limit, and one 9-minute track shouldn't block a
+    # night's stream. (Lift the cap by rendering longer pieces.)
+    min_piece = min((float(p["dur"]) for p in catalog["pieces"]), default=0.0)
+    song_cap = min_piece - dwell
+    excluded = [t["file"] for t in library if float(t["dur"]) > song_cap + 1e-6]
+    library = [t for t in library if float(t["dur"]) <= song_cap + 1e-6]
+    if not library:
+        raise ValueError(
+            f"no songs fit the DWELL constraint: dwell({dwell}) + every song "
+            f"> min_piece({min_piece:.1f}). Lower dwell_sec or use longer pieces.")
+
     # Music: shuffle (seeded, no immediate repeat), build timeline to >= show_dur.
     ordered = shuffle(library, seed=seed, no_repeat=True)
     timeline = build_music_timeline(ordered, target_dur=show_dur)
     real_dur = timeline[-1]["end"] if timeline else 0.0   # exact end of the audio
     boundaries = song_boundaries(timeline)
     subs = build_subtitles(timeline)
-
-    # DWELL constraint: a piece segment is at most dwell + the longest song; it must
-    # fit within the shortest piece source. Fail loudly if violated.
-    max_song = max((e["end"] - e["start"] for e in timeline), default=0.0)
-    min_piece = min((float(p["dur"]) for p in catalog["pieces"]), default=0.0)
-    if dwell + max_song > min_piece + 1e-6:
-        raise ValueError(
-            f"DWELL constraint violated: dwell({dwell}) + max_song({max_song:.1f}) "
-            f"> min_piece({min_piece:.1f}). Lower dwell_sec or use longer pieces.")
 
     pieces = shuffle([{"src": p["file"], "dur": float(p["dur"])} for p in catalog["pieces"]],
                      seed=seed + 1, no_repeat=True)
@@ -129,20 +134,33 @@ def build_plan(catalog: dict, library: list[dict], config: dict) -> dict:
         "music": timeline,
         "edl": edl,
         "subtitles": subs,
+        "excluded_songs": excluded,
         "catalog_sha": _sha(sorted(p["file"] for p in catalog["pieces"]) +
                             sorted(i["file"] for i in catalog["idents"])),
         "library_sha": _sha(sorted(t["file"] for t in library)),
     }
 
 
+def resolve_media(entry_file: str, catalog_dir: str) -> str:
+    """catalog.json records the absolute path on the machine that RENDERED the
+    piece; the bake runs elsewhere (box: /data/catalog). Prefer the sibling file
+    next to catalog.json, fall back to the recorded path."""
+    local = os.path.join(catalog_dir, os.path.basename(entry_file))
+    return local if os.path.exists(local) else entry_file
+
+
 def _load_catalog(path: str) -> dict:
     with open(path) as f:
         data = json.load(f)
-    pieces = [{"file": e["file"], "dur": ffprobe_duration(e["file"])}
-              for e in data["pieces"] if e["kind"] == "piece"]
-    idents = [{"file": e["file"], "dur": ffprobe_duration(e["file"])}
-              for e in data["pieces"] if e["kind"] == "ident"]
-    return {"pieces": pieces, "idents": idents}
+    here = os.path.dirname(os.path.abspath(path))
+    out = {"pieces": [], "idents": []}
+    for e in data["pieces"]:
+        key = {"piece": "pieces", "ident": "idents"}.get(e["kind"])
+        if key is None:
+            continue
+        f_path = resolve_media(e["file"], here)
+        out[key].append({"file": f_path, "dur": ffprobe_duration(f_path)})
+    return out
 
 
 def main():
@@ -168,6 +186,10 @@ def main():
     plan_doc = build_plan(catalog, library, cfg)
     with open(a.out, "w") as f:
         json.dump(plan_doc, f, indent=2)
+    dropped = plan_doc["excluded_songs"]
+    if dropped:
+        print(f"[plan] excluded {len(dropped)} song(s) longer than the piece/dwell "
+              f"budget: {', '.join(os.path.basename(d) for d in dropped)}")
     print(f"[plan] wrote {a.out}: {len(plan_doc['edl'])} edl segs, "
           f"{len(plan_doc['music'])} songs, show_dur={plan_doc['show_dur_sec']:.1f}s")
 

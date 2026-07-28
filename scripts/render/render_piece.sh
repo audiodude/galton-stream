@@ -38,9 +38,10 @@ if [[ -f "$OUT_MP4" ]]; then
     exit 0
 fi
 
-# Temp files
+# Temp files. The intermediate AVI is multi-GB (a 300s 1080p60 piece is ~5 GB);
+# /tmp is tmpfs on some hosts, so park it next to the output by default.
 TMP_PRESET="$(mktemp /tmp/preset_XXXXXX.json)"
-TMP_AVI="$(mktemp /tmp/render_XXXXXX.avi)"
+TMP_AVI="$(mktemp "${RENDER_TMPDIR:-$OUT_DIR}/render_XXXXXX.avi")"
 
 
 cleanup() {

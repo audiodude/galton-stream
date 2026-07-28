@@ -81,3 +81,43 @@ def test_build_plan_deterministic_and_constraint():
     assert a["music"] and a["edl"] and a["subtitles"]
     # DWELL constraint asserted: dwell + max_song <= min piece dur
     assert cfg["dwell_sec"] + 200.0 <= 1200.0
+    assert a["excluded_songs"] == []
+
+
+def test_build_plan_excludes_songs_that_bust_the_dwell_budget():
+    catalog = {"pieces": [{"file": "/c/p0.mp4", "dur": 300.0}],
+               "idents": [{"file": "/c/id.mp4", "dur": 12.0}]}
+    library = [{"file": "/m/ok.mp3", "title": "Ok", "dur": 200.0},
+               {"file": "/m/epic.mp3", "title": "Epic", "dur": 540.0}]
+    cfg = {"seed": 1, "show_dur_sec": 600.0, "dwell_sec": 30.0,
+           "fps": 60, "resolution": "1280x720", "straddle": True}
+    p = plan.build_plan(catalog, library, cfg)
+    assert p["excluded_songs"] == ["/m/epic.mp3"]           # 30 + 540 > 300
+    assert [m["file"] for m in p["music"]] == ["/m/ok.mp3"]  # only the fitting song
+    for seg in p["edl"]:
+        if seg["kind"] == "piece":
+            assert seg["out"] <= 300.0 + 1e-6
+
+
+def test_build_plan_raises_when_no_song_fits():
+    catalog = {"pieces": [{"file": "/c/p0.mp4", "dur": 100.0}],
+               "idents": [{"file": "/c/id.mp4", "dur": 12.0}]}
+    library = [{"file": "/m/long.mp3", "title": "Long", "dur": 400.0}]
+    cfg = {"seed": 1, "show_dur_sec": 600.0, "dwell_sec": 30.0,
+           "fps": 60, "resolution": "1280x720", "straddle": True}
+    try:
+        plan.build_plan(catalog, library, cfg)
+    except ValueError as e:
+        assert "no songs fit" in str(e)
+    else:
+        assert False, "expected ValueError when every song busts the budget"
+
+
+def test_resolve_media_prefers_sibling_of_catalog(tmp_path):
+    # catalog.json records the render host's path; the bake machine has the mp4
+    # next to catalog.json instead.
+    local = tmp_path / "piece.mp4"
+    local.write_bytes(b"x")
+    assert plan.resolve_media("/home/renderbox/out/piece.mp4", str(tmp_path)) == str(local)
+    # nothing local -> keep the recorded path (single-machine case)
+    assert plan.resolve_media("/elsewhere/gone.mp4", str(tmp_path)) == "/elsewhere/gone.mp4"

@@ -12,8 +12,7 @@ S3_URI="${2:?}"
 
 echo "[upload_catalog] syncing mp4s: $OUT_DIR -> $S3_URI"
 aws s3 sync "$OUT_DIR" "$S3_URI" \
-    --exclude "catalog.json" \
-    --exclude "*.json" \
+    --exclude "*" \
     --include "*.mp4" \
     --no-progress
 
