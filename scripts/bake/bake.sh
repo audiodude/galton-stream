@@ -31,11 +31,25 @@ echo "[bake] validating"
 python3 "$HERE/validate.py" --plan "$PLAN" --show "$SHOW"
 
 echo "[bake] publishing to S3"
-aws s3 cp "$SHOW" "${S3_SHOWS_URI:?}/show-$DATE.mkv" --no-progress
-aws s3 cp "$PLAN" "${S3_SHOWS_URI}/show-$DATE.plan.json" --no-progress
+S3_SHOWS="${S3_SHOWS_URI:?}"; S3_SHOWS="${S3_SHOWS%/}"   # env may carry a trailing /
+aws s3 cp "$SHOW" "$S3_SHOWS/show-$DATE.mkv" --no-progress
+aws s3 cp "$PLAN" "$S3_SHOWS/show-$DATE.plan.json" --no-progress
 echo "show-$DATE.mkv" > "$SHOWS_DIR/LATEST"
-aws s3 cp "$SHOWS_DIR/LATEST" "${S3_SHOWS_URI}/LATEST" --no-progress
+aws s3 cp "$SHOWS_DIR/LATEST" "$S3_SHOWS/LATEST" --no-progress
 
-echo "[bake] pruning shows older than ${RETENTION_DAYS:-3} days"
-find "$SHOWS_DIR" -name 'show-*.mkv' -mtime "+${RETENTION_DAYS:-3}" -delete || true
+RETAIN="${RETENTION_DAYS:-3}"
+echo "[bake] pruning shows older than $RETAIN days"
+find "$SHOWS_DIR" -name 'show-*.mkv' -mtime "+$RETAIN" -delete || true
+
+# S3 too: a show is ~16 GB, so keeping every night forever is a real bill. Match
+# on the show's own date stamp (not S3 mtime) and never touch LATEST.
+CUTOFF="$(date -u -d "-$RETAIN days" +%Y-%m-%d)"
+BUCKET="${S3_SHOWS#s3://}"; BUCKET="${BUCKET%%/*}"
+aws s3 ls "$S3_SHOWS/" --recursive | awk '{print $4}' | while read -r key; do
+    base="${key##*/}"
+    [[ "$base" =~ ^show-([0-9]{4}-[0-9]{2}-[0-9]{2})\. ]] || continue   # never LATEST
+    [[ "${BASH_REMATCH[1]}" < "$CUTOFF" ]] || continue
+    echo "[bake] pruning s3://$BUCKET/$key"
+    aws s3 rm "s3://$BUCKET/$key" || true
+done
 echo "[bake] done: $SHOW"
